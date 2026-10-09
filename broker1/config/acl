@@ -1,0 +1,12 @@
+user admin
+topic readwrite #
+
+user sensor
+topic write sensors/#
+topic read  cmd/sensor/#
+
+user viewer
+topic read sensors/#
+
+# 모든 인증 사용자: users/<자기이름>/ 아래는 읽고 쓰기 가능
+pattern readwrite users/%u/#

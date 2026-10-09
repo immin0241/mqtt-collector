@@ -1,0 +1,75 @@
+services:
+  # 최초 1회: 비밀번호 파일 생성 (학습용 계정)
+  init:
+    image: eclipse-mosquitto:2
+    user: root
+    volumes:
+      - ./broker1/config:/cfg
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        rm -f /cfg/passwd && touch /cfg/passwd
+        mosquitto_passwd -b /cfg/passwd admin  admin123
+        mosquitto_passwd -b /cfg/passwd sensor sensor123
+        mosquitto_passwd -b /cfg/passwd viewer viewer123
+        chown 1883:1883 /cfg/passwd && chmod 0700 /cfg/passwd
+    restart: "no"
+
+  # 메인 브로커: 1883(익명) / 1884(인증+ACL) / 9001(WebSocket)
+  broker1:
+    image: eclipse-mosquitto:2
+    container_name: broker1
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    ports:
+      - "1883:1883"
+      - "1884:1884"
+      - "9001:9001"
+    volumes:
+      - ./broker1/config:/mosquitto/config
+      - broker1-data:/mosquitto/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 1883 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+
+  # mosquitto_pub / mosquitto_sub 를 실행할 클라이언트 컨테이너
+  client:
+    image: eclipse-mosquitto:2
+    container_name: client
+    entrypoint: ["sleep", "infinity"]
+    depends_on: [broker1]
+
+  postgres:
+    image: postgres:latest
+    container_name: go-postgres
+    environment:
+      POSTGRES_DB: go
+      POSTGRES_USER: go
+      POSTGRES_PASSWORD: go
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U go" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  app:
+    build: .
+    env_file:
+      .env
+    depends_on:
+      broker1:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+volumes:
+  broker1-data:
+  postgres_data:
