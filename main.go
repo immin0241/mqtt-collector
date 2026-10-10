@@ -23,11 +23,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to connect database: %v", err)
 	}
-	if err := db.AutoMigrate(&workers.SensorData{}); err != nil {
-		log.Fatalf("failed to migrate: %v", err)
-	}
 
-	messages := make(chan mqtt.Message, 100)
+	messages := make(chan mqtt.Message, 600)
 
 	sensorCollectionWorker := &workers.SensorCollectionWorker{
 		BrokerAddress:  os.Getenv("MQTT_BROKER"),

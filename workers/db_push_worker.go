@@ -2,37 +2,90 @@ package workers
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"log"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+const (
+	batchSize     = 300
+	flushInterval = 2 * time.Second
 )
 
 type SensorData struct {
-	gorm.Model
-	Topic string
-	Value string
+	Time        time.Time `gorm:"column:time" json:"time"`
+	SensorID    int       `gorm:"column:sensor_id" json:"sensor_id"`
+	Seq         int64     `json:"seq"`
+	TiltX       *float64  `json:"tilt_x"`
+	TiltY       *float64  `json:"tilt_y"`
+	CrackWidth  *float64  `json:"crack_width"`
+	Temperature *float64  `json:"temperature"`
+	ReceivedAt  time.Time `json:"-"`
 }
+
+func (SensorData) TableName() string { return "sensor_data" }
 
 type DbPushWorker struct {
 	DB             *gorm.DB
 	MessageChannel chan mqtt.Message
-	BufferChannel  chan mqtt.Message
 }
 
 func (worker *DbPushWorker) Run(ctx context.Context) error {
+	batch := make([]SensorData, 0, batchSize)
+
+	// 배치의 첫 메시지가 들어온 시점부터 flushInterval 경과 시 flush
+	timer := time.NewTimer(flushInterval)
+	if !timer.Stop() {
+		<-timer.C
+	}
+
+	flush := func(flushCtx context.Context) {
+		if timer.Stop() == false {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		if len(batch) == 0 {
+			return
+		}
+		err := worker.DB.WithContext(flushCtx).
+			Clauses(clause.OnConflict{DoNothing: true}).
+			CreateInBatches(batch, batchSize).Error
+		if err != nil {
+			log.Printf("Failed to bulk insert %d rows: %v", len(batch), err)
+		}
+		batch = batch[:0]
+	}
+
 	for {
 		select {
 		case message := <-worker.MessageChannel:
-			fmt.Printf("%s | Received payload: %s\n", time.Now().Format(time.RFC3339Nano), message.Payload())
-
-			data := SensorData{Topic: message.Topic(), Value: string(message.Payload())}
-			if err := worker.DB.WithContext(ctx).Create(&data).Error; err != nil {
-				log.Printf("Failed to save sensor data: %v", err)
+			var data SensorData
+			if err := json.Unmarshal(message.Payload(), &data); err != nil {
+				log.Printf("Skipping invalid payload on %s: %v", message.Topic(), err)
+				continue
 			}
+			data.ReceivedAt = time.Now()
+
+			if len(batch) == 0 {
+				timer.Reset(flushInterval)
+			}
+			batch = append(batch, data)
+
+			if len(batch) >= batchSize {
+				flush(ctx)
+			}
+		case <-timer.C:
+			flush(ctx)
 		case <-ctx.Done():
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			flush(shutdownCtx)
+			cancel()
 			return nil
 		}
 	}
