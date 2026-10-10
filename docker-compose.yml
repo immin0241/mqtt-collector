@@ -43,8 +43,8 @@ services:
     depends_on: [broker1]
 
   postgres:
-    image: postgres:latest
-    container_name: go-postgres
+    image: timescale/timescaledb:latest-pg18
+    container_name: app-postgres
     environment:
       POSTGRES_DB: go
       POSTGRES_USER: go
@@ -62,8 +62,9 @@ services:
 
   app:
     build: .
+    restart: on-failure
     env_file:
-      .env
+      - .env
     depends_on:
       broker1:
         condition: service_healthy

@@ -12,13 +12,15 @@ import (
 type SensorCollectionWorker struct {
 	broker         mqtt.Client
 	BrokerAddress  string
-	messageChannel chan mqtt.Message
+	Username       string
+	Password       string
+	MessageChannel chan mqtt.Message
 }
 
 func (s *SensorCollectionWorker) MessageHandler(ctx context.Context) mqtt.MessageHandler {
 	return func(client mqtt.Client, msg mqtt.Message) {
 		select {
-		case s.messageChannel <- msg:
+		case s.MessageChannel <- msg:
 		case <-ctx.Done():
 		}
 	}
@@ -38,12 +40,16 @@ func (s *SensorCollectionWorker) CreateClient() {
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(s.BrokerAddress)
 	opts.SetClientID("go_mqtt_subscriber_client")
+	if s.Username != "" {
+		opts.SetUsername(s.Username)
+		opts.SetPassword(s.Password)
+	}
 
 	opts.OnConnect = connectHandler
 	opts.OnConnectionLost = connectLostHandler
 
 	opts.SetKeepAlive(60 * time.Second)
-	opts.SetPingTimeout(1 * time.Second)
+	opts.SetPingTimeout(5 * time.Second)
 	opts.SetAutoReconnect(true)
 
 	s.broker = mqtt.NewClient(opts)
@@ -63,7 +69,7 @@ func (s *SensorCollectionWorker) Run(ctx context.Context, topics []string) error
 		token.Wait()
 
 		if token.Error() != nil {
-			log.Printf("Failed to subscribe to %s: %v", v, token.Error())
+			return fmt.Errorf("failed to subscribe to %s: %v", v, token.Error())
 		}
 
 		log.Printf("Subscribed to topic: %s", v)

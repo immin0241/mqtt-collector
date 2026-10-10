@@ -22,13 +22,12 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o main .
 # 최소 가벼운 이미지인 scratch 또는 alpine 사용 (여기서는 alpine 사용)
 FROM alpine:3.19
 
+RUN apk add --no-cache ca-certificates tzdata
+
 WORKDIR /root/
 
 # 빌드 단계에서 생성된 정적 바이너리 파일만 복사
 COPY --from=builder /app/main .
-
-# 애플리케이션이 사용하는 MQTT 포트나 웹 포트 개방 (예: 웹 앱인 경우 8080)
-EXPOSE 8080
 
 # 컨테이너 시작 시 실행될 명령어
 CMD ["./main"]
