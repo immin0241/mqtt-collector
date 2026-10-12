@@ -71,6 +71,28 @@ services:
       postgres:
         condition: service_healthy
 
+  emulator:
+    build:
+      context: mqtt_emulator
+      args:
+        MQTT_HOST: broker1
+        MQTT_PORT: 1883
+    restart: no
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/config')"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  curl:
+    image: curlimages/curl:latest
+    entrypoint: ["curl", "-X", "PUT", "http://emulator:8000/config", "-H", "Content-Type: application/json", "-d", '{ "sensors": [ {"id": 101, "sensor_type": "tilt"}, {"id": 102, "sensor_type": "crack"}, {"id": 103, "sensor_type": "env"} ], "interval_seconds": 1.0, "jitter_fraction": 0.1, "topic_prefix": "sensors", "qos": 1 }']
+    depends_on:
+      emulator:
+        condition: service_healthy
+
 volumes:
   broker1-data:
   postgres_data:

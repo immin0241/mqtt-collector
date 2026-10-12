@@ -37,7 +37,7 @@ func main() {
 	dbPushWorker := &workers.DbPushWorker{DB: db, MessageChannel: messages}
 
 	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return sensorCollectionWorker.Run(gctx, []string{"sensors/tilt/#"}) })
+	g.Go(func() error { return sensorCollectionWorker.Run(gctx, []string{"sensors/#"}) })
 	g.Go(func() error { return dbPushWorker.Run(gctx) })
 
 	if err := g.Wait(); err != nil {
