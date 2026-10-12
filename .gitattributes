@@ -1,0 +1,25 @@
+# 기본: 텍스트 파일은 저장소에 LF로 정규화
+* text=auto eol=lf
+
+# 소스 / 설정
+*.go     text eol=lf
+*.py     text eol=lf
+*.sql    text eol=lf
+*.sh     text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.toml   text eol=lf
+*.md     text eol=lf
+Dockerfile text eol=lf
+*.conf   text eol=lf
+.env     text eol=lf
+
+# 락 파일은 diff 노이즈 방지
+go.sum   text eol=lf linguist-generated
+uv.lock  text eol=lf linguist-generated
+
+# 바이너리
+*.png    binary
+*.jpg    binary
+*.webp   binary
+*.pyc    binary
