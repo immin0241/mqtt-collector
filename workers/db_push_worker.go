@@ -2,11 +2,9 @@ package workers
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"time"
 
-	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -30,8 +28,8 @@ type SensorData struct {
 func (SensorData) TableName() string { return "sensor_data" }
 
 type DbPushWorker struct {
-	DB             *gorm.DB
-	MessageChannel chan mqtt.Message
+	DB          *gorm.DB
+	DataChannel chan SensorData
 }
 
 func (worker *DbPushWorker) Run(ctx context.Context) error {
@@ -64,14 +62,7 @@ func (worker *DbPushWorker) Run(ctx context.Context) error {
 
 	for {
 		select {
-		case message := <-worker.MessageChannel:
-			var data SensorData
-			if err := json.Unmarshal(message.Payload(), &data); err != nil {
-				log.Printf("Skipping invalid payload on %s: %v", message.Topic(), err)
-				continue
-			}
-			data.ReceivedAt = time.Now()
-
+		case data := <-worker.DataChannel:
 			if len(batch) == 0 {
 				timer.Reset(flushInterval)
 			}

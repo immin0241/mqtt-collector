@@ -14,12 +14,15 @@ import aiomqtt
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from sensor import Sensor, build_reading, command_topic
+
 
 MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 
 WORKERS = 32
 QUEUE_CAPACITY = 5000
+MAX_PER_SENSOR = 2000
 
 
 class SensorSpec(BaseModel):
@@ -40,6 +43,9 @@ class PublisherConfig(BaseModel):
     )
     topic_prefix: str = "sensors"
     qos: Literal[0, 1] = 1
+    # shared: 하나의 MQTT 연결로 모든 센서를 발행 (대량 부하용, status/LWT 없음)
+    # per_sensor: 센서마다 MQTT 연결과 LWT를 가짐 (접속/단절 테스트용)
+    mode: Literal["shared", "per_sensor"] = "shared"
 
 
 class Message:
@@ -65,6 +71,7 @@ sequences: dict[int, int] = {}
 metrics = {
     "publish_completed": 0,
     "publish_errors": 0,
+    "last_error": "",
     "dropped_queue_full": 0,
     "schedule_lag_total_ms": 0.0,
     "publish_latency_total_ms": 0.0,
@@ -73,34 +80,12 @@ metrics = {
 
 started_at = 0.0
 
+# per_sensor 모드에서 이 프로세스가 호스팅하는 센서들
+hosted: dict[int, tuple[Sensor, asyncio.Task]] = {}
+
 
 def generate_reading(sensor: SensorSpec) -> dict:
-    """DB의 sensor_data 컬럼에 대응하는 측정값을 생성합니다."""
-    result = {
-        "sensor_id": sensor.id,
-        "seq": sequences.get(sensor.id, 0),
-        "time": datetime.now(timezone.utc).isoformat(),
-        "tilt_x": None,
-        "tilt_y": None,
-        "crack_width": None,
-        "temperature": None,
-    }
-
-    if sensor.sensor_type == "tilt":
-        result["tilt_x"] = round(random.uniform(-1.0, 1.0), 6)
-        result["tilt_y"] = round(random.uniform(-1.0, 1.0), 6)
-
-    elif sensor.sensor_type == "crack":
-        result["crack_width"] = round(
-            random.uniform(0.0, 5.0), 4
-        )
-
-    elif sensor.sensor_type == "env":
-        result["temperature"] = round(
-            random.uniform(-10.0, 40.0), 2
-        )
-
-    return result
+    return build_reading(sensor.id, sensor.sensor_type, sequences.get(sensor.id, 0))
 
 
 async def scheduler():
@@ -111,6 +96,9 @@ async def scheduler():
         async with config_lock:
             cfg = config.model_copy(deep=True)
             version = config_version
+
+        if cfg.mode != "shared":
+            cfg.sensors = []
 
         now = time.monotonic()
 
@@ -230,8 +218,13 @@ async def publisher_worker(client: aiomqtt.Client):
 
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as e:
             metrics["publish_errors"] += 1
+            metrics["last_error"] = f"{type(e).__name__}: {e}"
+
+            # 연결 자체가 끊긴 경우에는 에러를 삼키지 않고 올려 run_publisher 가 재접속하게 한다.
+            if not client._client.is_connected():
+                raise
         finally:
             queue.task_done()
 
@@ -269,6 +262,9 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         stop_event.set()
+        for sensor, sensor_task in hosted.values():
+            sensor.stop(graceful=True)
+            sensor_task.cancel()
         task.cancel()
 
         try:
@@ -278,6 +274,105 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+def reconcile_sensors():
+    """mode=per_sensor 일 때 설정과 호스팅 중인 Sensor 태스크를 맞춘다. config_lock 안에서 호출."""
+    desired = (
+        {spec.id: spec for spec in config.sensors}
+        if config.mode == "per_sensor"
+        else {}
+    )
+
+    for sensor_id in list(hosted):
+        if sensor_id not in desired:
+            sensor, _ = hosted.pop(sensor_id)
+            sensor.stop(graceful=True)
+
+    for sensor_id, spec in desired.items():
+        existing = hosted.get(sensor_id)
+        if existing and not existing[1].done():
+            sensor = existing[0]
+            sensor.interval = config.interval_seconds
+            sensor.jitter = config.jitter_fraction
+            sensor.qos = config.qos
+            continue
+
+        sensor = Sensor(
+            sensor_id=spec.id,
+            sensor_type=spec.sensor_type,
+            host=MQTT_HOST,
+            port=MQTT_PORT,
+            interval=config.interval_seconds,
+            jitter=config.jitter_fraction,
+            qos=config.qos,
+            topic_prefix=config.topic_prefix,
+        )
+        hosted[sensor_id] = (sensor, asyncio.create_task(sensor.run()))
+
+
+async def send_command(sensor_id: int, payload: str):
+    """센서의 cmd 토픽으로 명령을 발행한다. 센서가 컨테이너든 이 프로세스의 태스크든 동일하다."""
+    try:
+        async with aiomqtt.Client(MQTT_HOST, port=MQTT_PORT) as client:
+            await client.publish(command_topic(sensor_id), payload, qos=1)
+    except aiomqtt.MqttError as e:
+        raise HTTPException(status_code=503, detail=f"broker unavailable: {e}")
+
+
+@app.get("/sensors")
+async def get_sensors():
+    """이 프로세스가 호스팅 중인 센서(per_sensor 모드)의 상태."""
+    return [
+        {
+            "id": sensor.id,
+            "sensor_type": sensor.type,
+            "state": "dead" if task.done() else sensor.state,
+            "paused": sensor.paused,
+            "interval_seconds": sensor.interval,
+            "seq": sensor.seq,
+            "published": sensor.published,
+        }
+        for sensor, task in hosted.values()
+    ]
+
+
+@app.post("/sensors/{sensor_id}/pause")
+async def pause_sensor(sensor_id: int):
+    await send_command(sensor_id, "pause")
+    return {"sensor_id": sensor_id, "command": "pause"}
+
+
+@app.post("/sensors/{sensor_id}/resume")
+async def resume_sensor(sensor_id: int):
+    await send_command(sensor_id, "resume")
+    return {"sensor_id": sensor_id, "command": "resume"}
+
+
+@app.post("/sensors/{sensor_id}/kill")
+async def kill_sensor(
+    sensor_id: int, mode: Literal["graceful", "abrupt"] = "graceful"
+):
+    await send_command(sensor_id, f"kill:{mode}")
+    return {"sensor_id": sensor_id, "command": f"kill:{mode}"}
+
+
+@app.post("/sensors/{sensor_id}/interval")
+async def set_sensor_interval(sensor_id: int, seconds: float):
+    if not 0 < seconds <= 86400:
+        raise HTTPException(status_code=422, detail="seconds out of range")
+    await send_command(sensor_id, f"interval:{seconds}")
+    return {"sensor_id": sensor_id, "command": f"interval:{seconds}"}
+
+
+@app.post("/sensors/{sensor_id}/start")
+async def start_sensor(sensor_id: int):
+    """kill 된 호스팅 센서를 다시 시작한다 (컨테이너 센서는 docker start)."""
+    async with config_lock:
+        if config.mode != "per_sensor" or sensor_id not in {s.id for s in config.sensors}:
+            raise HTTPException(status_code=404, detail="not a hosted per_sensor sensor")
+        reconcile_sensors()
+    return {"sensor_id": sensor_id, "command": "start"}
 
 
 @app.get("/config")
@@ -298,9 +393,16 @@ async def update_config(new_config: PublisherConfig):
             detail="Sensor IDs must be unique",
         )
 
+    if new_config.mode == "per_sensor" and len(ids) > MAX_PER_SENSOR:
+        raise HTTPException(
+            status_code=422,
+            detail=f"per_sensor mode supports at most {MAX_PER_SENSOR} sensors",
+        )
+
     async with config_lock:
         config = new_config
         config_version += 1
+        reconcile_sensors()
 
     return {
         "version": config_version,
