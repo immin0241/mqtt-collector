@@ -77,7 +77,7 @@ services:
       args:
         MQTT_HOST: broker1
         MQTT_PORT: 1883
-    restart: no
+    restart: "no"
     ports:
       - "8000:8000"
     healthcheck:
@@ -85,6 +85,117 @@ services:
       interval: 3s
       timeout: 3s
       retries: 10
+
+  # 센서 1개 = 컨테이너 1개 (profile: sensors). docker kill -> LWT, docker stop -> 정상 종료
+  sensor-101: &sensor
+    profiles: ["sensors"]
+    build:
+      context: mqtt_emulator
+      args:
+        MQTT_HOST: broker1
+        MQTT_PORT: 1883
+    command: ["python", "run_sensor.py"]
+    restart: "no"
+    environment: &sensor-env
+      MQTT_HOST: broker1
+      MQTT_PORT: "1883"
+      INTERVAL_SECONDS: "1.0"
+      SENSOR_ID: "101"
+      SENSOR_TYPE: tilt
+    depends_on:
+      broker1:
+        condition: service_healthy
+
+  sensor-102:
+    <<: *sensor
+    environment:
+      <<: *sensor-env
+      SENSOR_ID: "102"
+      SENSOR_TYPE: crack
+
+  sensor-103:
+    <<: *sensor
+    environment:
+      <<: *sensor-env
+      SENSOR_ID: "103"
+      SENSOR_TYPE: env
+
+  logto-postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: logto
+      POSTGRES_PASSWORD: logto
+      POSTGRES_DB: logto
+    volumes:
+      - logto-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U logto"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # IDP. 사용자 로그인(3001) / 관리 콘솔(3002). 최초 접속 시 콘솔에서 관리자 계정을 만든다.
+  logto:
+    image: svhd/logto:1.45.0
+    entrypoint: ["sh", "-c", "npm run cli db seed -- --swe && npm start"]
+    ports:
+      - "3001:3001"
+      - "3002:3002"
+    environment:
+      TRUST_PROXY_HEADER: "1"
+      DB_URL: postgres://logto:logto@logto-postgres:5432/logto
+      # 브라우저에서 접근하는 주소. OIDC issuer 가 ENDPOINT/oidc 가 된다.
+      ENDPOINT: http://localhost:3001
+      ADMIN_ENDPOINT: http://localhost:3002
+    depends_on:
+      logto-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3001/api/status').then(r=>process.exit(r.ok||r.status===204?0:1)).catch(()=>process.exit(1))\""]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  grafana:
+    image: grafana/grafana-oss:11.6.1
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # 개발용 org(1) <-> dev tenant(2) 데이터소스 계정. scripts/provision_tenant.sh 2 로 생성
+      GRAFANA_DB_USER: grafana_tenant_2
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-grafana}
+      # Logto(OIDC) 로그인. ID 토큰/userinfo의 organizations claim -> Grafana org 매핑.
+      #   GRAFANA_OAUTH_ORG_MAPPING = "<Logto organization id>:<Grafana org id>:<role>" (여러 개는 공백으로 구분)
+      # 브라우저가 쓰는 URL(auth)은 localhost, Grafana 컨테이너가 쓰는 URL(token/api)은 compose 내부 주소다.
+      GF_AUTH_GENERIC_OAUTH_ENABLED: ${GRAFANA_OAUTH_ENABLED:-false}
+      GF_AUTH_GENERIC_OAUTH_NAME: Logto
+      GF_AUTH_GENERIC_OAUTH_CLIENT_ID: ${GRAFANA_OAUTH_CLIENT_ID:-}
+      GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET: ${GRAFANA_OAUTH_CLIENT_SECRET:-}
+      GF_AUTH_GENERIC_OAUTH_SCOPES: openid profile email urn:logto:scope:organizations
+      GF_AUTH_GENERIC_OAUTH_AUTH_URL: http://localhost:3001/oidc/auth
+      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: http://logto:3001/oidc/token
+      GF_AUTH_GENERIC_OAUTH_API_URL: http://logto:3001/oidc/me
+      GF_AUTH_GENERIC_OAUTH_USE_PKCE: "true"
+      GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP: "true"
+      GF_AUTH_GENERIC_OAUTH_LOGIN_ATTRIBUTE_PATH: username || email || sub
+      GF_AUTH_GENERIC_OAUTH_EMAIL_ATTRIBUTE_PATH: email
+      GF_AUTH_GENERIC_OAUTH_NAME_ATTRIBUTE_PATH: name || username
+      GF_AUTH_GENERIC_OAUTH_ORG_ATTRIBUTE_PATH: organizations
+      GF_AUTH_GENERIC_OAUTH_ORG_MAPPING: ${GRAFANA_OAUTH_ORG_MAPPING:-}
+      # 매핑되지 않은 사용자가 기본 org(1)에 자동 배정되면 tenant 격리가 깨진다.
+      GF_USERS_AUTO_ASSIGN_ORG: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      postgres:
+        condition: service_healthy
+      logto:
+        condition: service_healthy
 
   curl:
     image: curlimages/curl:latest
@@ -96,3 +207,5 @@ services:
 volumes:
   broker1-data:
   postgres_data:
+  grafana-data:
+  logto-postgres-data:

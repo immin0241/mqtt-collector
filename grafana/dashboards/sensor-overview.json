@@ -1,0 +1,525 @@
+{
+  "uid": "sensor-overview",
+  "title": "Sensor overview",
+  "tags": [
+    "sensors"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "browser",
+  "refresh": "5s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "sensor",
+        "label": "Sensor",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "sensors"
+        },
+        "query": "SELECT id AS __value, id || ' (' || sensor_type || ')' AS __text FROM v_sensor ORDER BY id",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Online sensors",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sensors"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sensors"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT count(*) FILTER (WHERE status = 'online') AS online, count(*) AS total FROM v_sensor_status"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Sensor status (now)",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sensors"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 20,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sensors"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT s.id AS sensor, s.sensor_type AS type, COALESCE(st.status, 'unknown') AS status,\n       st.last_seen_at AS \"last seen\", st.last_seq AS \"last seq\", st.status_changed_at AS \"since\"\nFROM v_sensor s LEFT JOIN v_sensor_status st ON st.sensor_id = s.id\nWHERE s.id IN ($sensor) ORDER BY s.id"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "online": {
+                        "color": "green",
+                        "text": "online"
+                      },
+                      "offline": {
+                        "color": "red",
+                        "text": "offline"
+                      },
+                      "unknown": {
+                        "color": "gray",
+                        "text": "unknown"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 3,
+      "type": "state-timeline",
+      "title": "Availability timeline",
+      "description": "sensor_event 전이 기반. 값이 바뀐 시점부터 다음 전이까지 상태가 유지된다.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sensors"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 16,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sensors"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT time, sensor_id::text AS metric,\n       CASE WHEN event_type IN ('connected', 'recovered') THEN 1 ELSE 0 END AS value\nFROM v_sensor_event\nWHERE $__timeFilter(time) AND sensor_id IN ($sensor)\nORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "color": "green",
+                  "text": "online",
+                  "index": 0
+                },
+                "0": {
+                  "color": "red",
+                  "text": "offline",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "custom": {
+            "fillOpacity": 80
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "never",
+        "legend": {
+          "showLegend": false
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "bargauge",
+      "title": "Availability % (selected range)",
+      "description": "선택 구간에서 online 으로 기록된 시간 비율. 구간 시작 이전의 마지막 전이 상태를 반영한다.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sensors"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 5,
+        "w": 8,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sensors"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH ev AS (\n  SELECT sensor_id, time,\n         CASE WHEN event_type IN ('connected', 'recovered') THEN 1 ELSE 0 END AS up,\n         LEAD(time, 1, $__timeTo()::timestamptz) OVER (PARTITION BY sensor_id ORDER BY time) AS next_time\n  FROM v_sensor_event\n  WHERE time < $__timeTo()::timestamptz AND sensor_id IN ($sensor)\n)\nSELECT sensor_id::text AS sensor,\n       100.0 * COALESCE(SUM(EXTRACT(EPOCH FROM LEAST(next_time, $__timeTo()::timestamptz) - GREATEST(time, $__timeFrom()::timestamptz)))\n                        FILTER (WHERE up = 1 AND next_time > $__timeFrom()::timestamptz), 0)\n             / NULLIF(EXTRACT(EPOCH FROM $__timeTo()::timestamptz - $__timeFrom()::timestamptz), 0) AS availability\nFROM ev GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 90
+              },
+              {
+                "color": "green",
+                "value": 99
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        },
+        "orientation": "horizontal",
+        "displayMode": "gradient"
+      }
+    },
+    {
+      "id": 5,
+      "type": "logs",
+      "title": "Connection events",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sensors"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sensors"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT time,\n       concat('sensor ', sensor_id, ' ', upper(event_type), ' [', source, '] ', message) AS message,\n       CASE WHEN event_type IN ('disconnected', 'timeout') THEN 'error' ELSE 'info' END AS level,\n       sensor_id::text AS sensor\nFROM v_sensor_event\nWHERE $__timeFilter(time) AND sensor_id IN ($sensor)\nORDER BY time DESC LIMIT 500"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Tilt (°)",
+      "description": "기울기 tilt_x / tilt_y. 1시간 초과 구간은 1분 집계, 이하는 원본을 $__interval 로 평균.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sensors"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sensors"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT bucket AS time, sensor_id::text AS metric, tilt_x_avg AS tilt_x, tilt_y_avg AS tilt_y\nFROM v_sensor_data_1m\nWHERE $__timeFilter(bucket) AND sensor_id IN ($sensor) AND (($__to - $__from) > 3600000) AND (tilt_x_avg IS NOT NULL OR tilt_y_avg IS NOT NULL)\nUNION ALL\nSELECT $__timeGroup(time, $__interval) AS time, sensor_id::text AS metric, avg(tilt_x) AS tilt_x, avg(tilt_y) AS tilt_y\nFROM v_sensor_data\nWHERE $__timeFilter(time) AND sensor_id IN ($sensor) AND NOT (($__to - $__from) > 3600000)\nGROUP BY 1, 2\nHAVING avg(tilt_x) IS NOT NULL OR avg(tilt_y) IS NOT NULL\nORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "degree",
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Crack width (mm)",
+      "description": "균열 폭.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sensors"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sensors"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT bucket AS time, sensor_id::text AS metric, crack_width_avg AS crack_width\nFROM v_sensor_data_1m\nWHERE $__timeFilter(bucket) AND sensor_id IN ($sensor) AND (($__to - $__from) > 3600000) AND (crack_width_avg IS NOT NULL)\nUNION ALL\nSELECT $__timeGroup(time, $__interval) AS time, sensor_id::text AS metric, avg(crack_width) AS crack_width\nFROM v_sensor_data\nWHERE $__timeFilter(time) AND sensor_id IN ($sensor) AND NOT (($__to - $__from) > 3600000)\nGROUP BY 1, 2\nHAVING avg(crack_width) IS NOT NULL\nORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "lengthmm",
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Temperature (°C)",
+      "description": "온도.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sensors"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sensors"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT bucket AS time, sensor_id::text AS metric, temperature_avg AS temperature\nFROM v_sensor_data_1m\nWHERE $__timeFilter(bucket) AND sensor_id IN ($sensor) AND (($__to - $__from) > 3600000) AND (temperature_avg IS NOT NULL)\nUNION ALL\nSELECT $__timeGroup(time, $__interval) AS time, sensor_id::text AS metric, avg(temperature) AS temperature\nFROM v_sensor_data\nWHERE $__timeFilter(time) AND sensor_id IN ($sensor) AND NOT (($__to - $__from) > 3600000)\nGROUP BY 1, 2\nHAVING avg(temperature) IS NOT NULL\nORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Data completeness (%)",
+      "description": "1분 버킷의 수신 건수 / 기대 건수(60000 / expected_interval_ms). 진행 중인 현재 분은 제외.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "sensors"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "sensors"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT bucket AS time, sensor_id::text AS metric,\n       100.0 * sample_count / (60000.0 / expected_interval_ms) AS completeness\nFROM v_sensor_data_1m\nWHERE $__timeFilter(bucket) AND sensor_id IN ($sensor) AND bucket < time_bucket('1 minute', now())\nORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "custom": {
+            "lineWidth": 1,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    }
+  ]
+}

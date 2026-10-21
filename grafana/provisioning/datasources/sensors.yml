@@ -1,0 +1,19 @@
+apiVersion: 1
+
+# 개발용 기본 org(1) <-> dev tenant(2). tenant 전용 DB role로 접속하므로 뷰(v_*)만 조회할 수 있다.
+# 다른 tenant org에는 scripts/provision_tenant.sh 가 datasource를 등록한다.
+datasources:
+  - name: sensors
+    uid: sensors
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: postgres:5432
+    user: ${GRAFANA_DB_USER}
+    isDefault: true
+    jsonData:
+      database: go
+      sslmode: disable
+      timescaledb: true
+      postgresVersion: 1800
+    secureJsonData:
+      password: ${GRAFANA_DB_PASSWORD}
