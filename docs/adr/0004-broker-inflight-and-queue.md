@@ -13,7 +13,7 @@
 
 ## 확인 필요 (측정 전 주장 금지)
 
-- mosquitto 기본값이 inflight 20, queued 1000이라는 것은 문서 기준이며 이 저장소의 브로커 이미지에서 실측하지 않았다. `docs/experiments/`에 실측값을 남긴다.
+- `max_queued_messages` 기본값 1,000은 `eclipse-mosquitto:2`에서 실측했다(`docs/experiments/phase1-tc02-03-04.md`). `max_inflight_messages` 기본값 20은 문서 기준이며 아직 실측하지 않았다.
 - `persistence true`이지만 큐된 메시지가 디스크에 보존되는 범위(`autosave_interval` 등)는 TC-04/TC-03에서 확인한다.
 - 큐가 가득 차면 mosquitto는 새 메시지를 버린다(QoS1도 해당). 60,000을 넘는 장애는 유실이 가능하므로 장애 허용 시간의 상한을 이 값이 정한다.
 - 메모리 영향(브로커 큐 60,000건 × 메시지 크기)은 아직 측정하지 않았다.
