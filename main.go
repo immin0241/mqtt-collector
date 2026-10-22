@@ -37,18 +37,37 @@ func main() {
 	}
 
 	tracker := workers.NewHealthTracker(durationEnv("HEALTH_MIN_TIMEOUT", 2*time.Second))
-	data := make(chan workers.SensorData, 600)
+	// 지속 세션은 고정 ClientID가 필요하다. 기본값을 두면 인스턴스끼리 세션을 빼앗으므로 필수로 받는다.
+	clientID := os.Getenv("MQTT_CLIENT_ID")
+	if clientID == "" {
+		log.Fatal("MQTT_CLIENT_ID is required (persistent session needs a stable client id)")
+	}
+
+	// 채널 상한 600: 메모리 상한. 가득 차면 수신 핸들러가 막혀 백프레셔가 걸린다.
+	data := make(chan workers.Envelope, 600)
+	unsubscribed := make(chan struct{})
+	flushed := make(chan struct{})
 
 	sensorCollectionWorker := &workers.SensorCollectionWorker{
 		BrokerAddress: os.Getenv("MQTT_BROKER"),
+		ClientID:      clientID,
 		Username:      os.Getenv("MQTT_USERNAME"),
 		Password:      os.Getenv("MQTT_PASSWORD"),
 		DataChannel:   data,
 		Tracker:       tracker,
+		Unsubscribed:  unsubscribed,
+		Flushed:       flushed,
 	}
 	sensorCollectionWorker.CreateClient(ctx)
 
-	dbPushWorker := &workers.DbPushWorker{DB: db, DataChannel: data}
+	dbPushWorker := &workers.DbPushWorker{
+		Store:         workers.GormStore{DB: db},
+		DataChannel:   data,
+		BatchSize:     300,
+		FlushInterval: durationEnv("FLUSH_INTERVAL", 2*time.Second),
+		Unsubscribed:  unsubscribed,
+		Flushed:       flushed,
+	}
 
 	healthWorker := &workers.HealthWorker{
 		DB:           db,
