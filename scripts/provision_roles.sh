@@ -21,5 +21,6 @@ GRANT SELECT ON sensor TO app_worker;
 GRANT SELECT, INSERT, UPDATE ON sensor_status TO app_worker;
 GRANT INSERT ON sensor_event TO app_worker;
 GRANT INSERT ON sensor_data TO app_worker;
+GRANT INSERT ON sensor_data_rejected TO app_worker;
 SQL
 echo "app_worker role ready"
