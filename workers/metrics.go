@@ -1,6 +1,9 @@
 package workers
 
 import (
+	"sync"
+	"sync/atomic"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -48,10 +51,24 @@ var (
 	})
 )
 
+var (
+	channelDepthOnce sync.Once
+	channelDepthSrc  atomic.Pointer[chan Envelope]
+)
+
 // RegisterChannelDepth는 수신 큐 길이 지표(channel_depth)를 등록한다.
+// 한 프로세스에서 여러 번 호출해도(통합 테스트) 지표는 한 번만 등록하고, 마지막으로 넘긴 채널을 읽는다.
 func RegisterChannelDepth(ch chan Envelope) {
-	promauto.NewGaugeFunc(prometheus.GaugeOpts{
-		Name: "channel_depth",
-		Help: "수신 핸들러와 DbPushWorker 사이 채널에 쌓인 메시지 수",
-	}, func() float64 { return float64(len(ch)) })
+	channelDepthSrc.Store(&ch)
+	channelDepthOnce.Do(func() {
+		promauto.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "channel_depth",
+			Help: "수신 핸들러와 DbPushWorker 사이 채널에 쌓인 메시지 수",
+		}, func() float64 {
+			if p := channelDepthSrc.Load(); p != nil {
+				return float64(len(*p))
+			}
+			return 0
+		})
+	})
 }

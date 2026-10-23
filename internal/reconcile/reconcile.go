@@ -1,4 +1,6 @@
-package main
+// Package reconcile은 발행 로그와 DB 내용을 대조해 누락, 중복, 예상 외 이벤트를 찾는다.
+// tools/reconcile CLI와 통합·e2e 테스트가 공통으로 쓴다.
+package reconcile
 
 import (
 	"bufio"
@@ -11,7 +13,7 @@ import (
 // SeqCounts는 sensor_id -> seq -> 등장 횟수다.
 type SeqCounts map[int]map[int64]int
 
-func (c SeqCounts) add(sensorID int, seq int64) {
+func (c SeqCounts) Add(sensorID int, seq int64) {
 	if c[sensorID] == nil {
 		c[sensorID] = map[int64]int{}
 	}
@@ -42,7 +44,7 @@ func (r SensorReport) OK() bool {
 	return r.Missing == 0 && r.Unexpected == 0 && r.DBDuplicates == 0
 }
 
-const sampleLimit = 20
+const SampleLimit = 20
 
 // ParsePublished는 발행 로그(JSONL, 한 줄에 {"sensor_id":..,"seq":..})를 읽는다.
 func ParsePublished(r io.Reader) (SeqCounts, error) {
@@ -66,7 +68,7 @@ func ParsePublished(r io.Reader) (SeqCounts, error) {
 		if rec.SensorID == nil || rec.Seq == nil {
 			return nil, fmt.Errorf("published log line %d: sensor_id and seq are required", line)
 		}
-		out.add(*rec.SensorID, *rec.Seq)
+		out.Add(*rec.SensorID, *rec.Seq)
 	}
 	return out, sc.Err()
 }
@@ -153,11 +155,11 @@ func contiguous(maps ...map[int64]int) map[int64]int {
 	return out
 }
 
-// sortedSample은 오름차순으로 정렬한 뒤 앞의 sampleLimit개만 남긴다. (건수는 별도 필드가 정확히 센다)
+// sortedSample은 오름차순으로 정렬한 뒤 앞의 SampleLimit개만 남긴다. (건수는 별도 필드가 정확히 센다)
 func sortedSample(s []int64) []int64 {
 	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
-	if len(s) > sampleLimit {
-		s = s[:sampleLimit]
+	if len(s) > SampleLimit {
+		s = s[:SampleLimit]
 	}
 	return s
 }

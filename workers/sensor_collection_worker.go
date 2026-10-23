@@ -31,7 +31,7 @@ type SensorCollectionWorker struct {
 	DataChannel   chan Envelope
 	Tracker       *HealthTracker
 
-	// 종료 순서 조율 (nil 허용). 구독 해제를 마치면 Unsubscribed를 닫고,
+	// 종료 순서 조율 (nil 허용). 수신을 멈추면(구독은 유지) Unsubscribed를 닫고,
 	// DbPushWorker가 최종 flush/ack를 마칠 때까지(Flushed) 기다린 뒤 연결을 끊는다.
 	Unsubscribed chan struct{}
 	Flushed      <-chan struct{}
@@ -153,6 +153,12 @@ func (s *SensorCollectionWorker) CreateClient(ctx context.Context) {
 	opts.SetAutoReconnect(true)
 
 	s.broker = mqtt.NewClient(opts)
+
+	// 핸들러는 연결 전에 등록한다. 지속 세션은 CONNACK 직후 미ack 메시지를 곧바로 재전달하는데,
+	// 라우트가 Subscribe(OnConnect)에서만 만들어지면 그 사이에 도착한 메시지는 핸들러가 없어
+	// "Message will NOT be acknowledged" 로 버려지고 브로커에는 inflight로 남아 다음 재연결까지 멈춘다.
+	s.broker.AddRoute(dataTopicFilter, s.dataHandler(ctx))
+	s.broker.AddRoute(statusTopicFilter, s.statusHandler())
 }
 
 func (s *SensorCollectionWorker) markUnsubscribed() {
@@ -176,14 +182,10 @@ func (s *SensorCollectionWorker) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 
-	// 종료 순서: 구독 해제 -> (DbPushWorker: drain -> 최종 flush -> ack) -> 연결 종료
-	for _, topic := range []string{dataTopicFilter, statusTopicFilter} {
-		token := s.broker.Unsubscribe(topic)
-		token.Wait()
-		if token.Error() != nil {
-			slog.Error("unsubscribe failed", "topic", topic, "error", token.Error())
-		}
-	}
+	// 종료 순서: 수신 중단 -> (DbPushWorker: drain -> 최종 flush -> ack) -> 연결 종료
+	// 구독은 해제하지 않는다. 지속 세션에서 Unsubscribe는 브로커의 구독 정보를 지워, 앱이 내려가 있는 동안
+	// 발행된 메시지가 큐에 쌓이지 않고 유실된다(ADR-0007, TC-16). ctx가 취소된 뒤 도착한 메시지는
+	// 핸들러가 큐에 넣지 않고 ack도 하지 않으므로 재시작 후 브로커가 다시 전달한다.
 	s.markUnsubscribed()
 
 	if s.Flushed != nil {
