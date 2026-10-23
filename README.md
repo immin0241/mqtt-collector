@@ -1,5 +1,7 @@
 # StructWatch MQTT Collector
 
+[![CI](https://github.com/immin0241/webframework-project-mqtt-collector/actions/workflows/ci.yml/badge.svg)](https://github.com/immin0241/webframework-project-mqtt-collector/actions/workflows/ci.yml)
+
 마포구 「AI 스마트 IoT 계측센서 관리시스템」 RFP를 기반으로 한 IoT 계측 데이터 수집 플랫폼이다.
 센서(기울기·균열·환경) 데이터를 MQTT로 받아 TimescaleDB에 **유실·중복 없이** 저장하는 것이 핵심이며,
 "동작한다"보다 **"장애에서도 정합성을 증명한다"** 가 목표다. AI 기능은 이후 단계에서 붙인다.
@@ -61,10 +63,13 @@ go run ./tools/reconcile --published run.jsonl --since 2026-10-23T01:00:00Z # �
 ### 테스트
 
 ```bash
-go test -race ./...   # 단위 테스트 (flush 조건, ack 순서, 재시도, 격리, 종료 drain, 오류 분류, 중복 제거, reconcile)
+go test -race ./...                 # 단위 + 통합(testcontainers: TimescaleDB, Mosquitto; Docker 필요, 없으면 건너뜀)
+go test -tags e2e ./test/e2e -v     # 장애 주입: TC-02(DB 차단), 03(브로커 중지), 04(SIGKILL), 06(부하+DB 지연)
 ```
 
-통합·장애 주입 테스트(testcontainers, e2e)는 Phase 3에서 추가한다.
+통합 테스트는 TC-01·05·07·16, e2e는 TC-02·03·04·06을 코드로 재현하며 판정은 `tools/reconcile`과 같은 `internal/reconcile`을 쓴다.
+구성, 측정 조건·결과, Toxiproxy 대신 프로세스 내 프록시를 쓴 이유는 [docs/notes/phase3-test-infra.md](docs/notes/phase3-test-infra.md)에 있다.
+CI는 푸시마다 vet과 위 첫 번째 명령을 실행하고, e2e는 GitHub Actions에서 수동으로 실행한다.
 
 ### 주요 환경 변수
 
@@ -86,6 +91,7 @@ go test -race ./...   # 단위 테스트 (flush 조건, ack 순서, 재시도, �
 | [0004](docs/adr/0004-broker-inflight-and-queue.md) | `max_inflight_messages 600`, `max_queued_messages 60000` |
 | [0005](docs/adr/0005-keep-gorm.md) | gorm 유지, pgx 오류 코드로 분류 |
 | [0006](docs/adr/0006-sensor-data-tenant-id-removal.md) | `sensor_data.tenant_id` 제거 이력 |
+| [0007](docs/adr/0007-shutdown-keeps-subscription.md) | 정상 종료 시 구독을 해제하지 않는다 (TC-16) |
 
 ## 측정 결과
 

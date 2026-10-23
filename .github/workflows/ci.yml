@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: vet
+        run: go vet ./...
+      - name: vet (e2e tag)
+        run: go vet -tags e2e ./...
+      # 단위 + 통합(testcontainers: TimescaleDB, Mosquitto). ubuntu 러너에는 Docker가 있다.
+      - name: test
+        run: go test -race -count=1 -timeout 15m ./...

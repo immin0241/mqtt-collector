@@ -4,6 +4,7 @@ package testenv
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -33,6 +34,8 @@ max_queued_messages 60000
 log_type error
 log_type warning
 `
+	// 원인 분석용: MOSQUITTO_DEBUG=1 이면 모든 로그를 남긴다.
+	mosquittoDebugConf = "log_type notice\nlog_type information\nconnection_messages true\n"
 )
 
 // RepoRoot는 저장소 루트 경로를 돌려준다.
@@ -108,6 +111,11 @@ func (p *Postgres) applyMigrations(t testing.TB) {
 	}
 }
 
+// DSNFor는 같은 DB를 다른 host:port(예: FaultProxy)로 접속하는 문자열이다.
+func (p *Postgres) DSNFor(addr string) string {
+	return strings.Replace(p.DSN, p.Addr, addr, 1)
+}
+
 // Conn은 컨테이너에 직접 연결한다. 호출한 쪽이 닫는다.
 func (p *Postgres) Conn(t testing.TB) *pgx.Conn {
 	t.Helper()
@@ -157,7 +165,7 @@ func StartMosquitto(t testing.TB) *Mosquitto {
 			Image:        mosquittoImage,
 			ExposedPorts: []string{"1883/tcp"},
 			Files: []testcontainers.ContainerFile{{
-				Reader:            strings.NewReader(mosquittoConf),
+				Reader:            strings.NewReader(brokerConf()),
 				ContainerFilePath: "/mosquitto/config/mosquitto.conf",
 				FileMode:          0o644,
 			}},
@@ -170,6 +178,25 @@ func StartMosquitto(t testing.TB) *Mosquitto {
 	}
 	t.Cleanup(func() { _ = testcontainers.TerminateContainer(c) })
 	return &Mosquitto{Container: c}
+}
+
+func brokerConf() string {
+	if os.Getenv("MOSQUITTO_DEBUG") == "1" {
+		return mosquittoConf + mosquittoDebugConf
+	}
+	return mosquittoConf
+}
+
+// Logs는 브로커 컨테이너 로그다. 실패 분석용이다.
+func (m *Mosquitto) Logs(t testing.TB) string {
+	t.Helper()
+	r, err := m.Container.Logs(context.Background())
+	if err != nil {
+		return "logs unavailable: " + err.Error()
+	}
+	defer r.Close()
+	b, _ := io.ReadAll(r)
+	return string(b)
 }
 
 // Addr는 호스트에서 본 현재 host:port 다. 컨테이너를 다시 시작하면 바뀔 수 있다.

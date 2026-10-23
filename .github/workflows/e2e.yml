@@ -1,0 +1,27 @@
+name: E2E (fault injection)
+
+# 장애 주입 테스트는 오래 걸리므로 수동으로 실행한다.
+on:
+  workflow_dispatch:
+    inputs:
+      tc06_duration:
+        description: TC-06 부하 지속 시간 (RFP 조건은 5m)
+        default: 30s
+      tc06_db_latency:
+        description: TC-06 DB 지연 (방향당)
+        default: 100ms
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: e2e
+        env:
+          E2E_TC06_DURATION: ${{ inputs.tc06_duration }}
+          E2E_TC06_DB_LATENCY: ${{ inputs.tc06_db_latency }}
+        run: go test -tags e2e -count=1 -timeout 40m -v ./test/e2e

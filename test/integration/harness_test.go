@@ -2,6 +2,8 @@ package integration
 
 import (
 	"context"
+	"log/slog"
+	"os"
 	"testing"
 	"time"
 
@@ -45,7 +47,13 @@ func (h *harness) startApp(t *testing.T, clientID string) *runningApp {
 		RetryInitial:  50 * time.Millisecond,
 		RetryMax:      500 * time.Millisecond,
 	}
-	go func() { a.done <- app.Run(ctx, cfg) }()
+	go func() {
+		err := app.Run(ctx, cfg)
+		if err != nil {
+			slog.Error("app.Run returned", "client_id", clientID, "error", err)
+		}
+		a.done <- err
+	}()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -116,6 +124,9 @@ func (h *harness) waitReconciled(t *testing.T, pub *testenv.Publisher, since tim
 			return reports
 		}
 		if time.Now().After(deadline) {
+			if os.Getenv("MOSQUITTO_DEBUG") == "1" {
+				t.Logf("broker log:\n%s", h.mq.Logs(t))
+			}
 			t.Fatalf("not reconciled within %s: %+v", timeout, reports)
 		}
 		time.Sleep(500 * time.Millisecond)

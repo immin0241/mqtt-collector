@@ -153,6 +153,12 @@ func (s *SensorCollectionWorker) CreateClient(ctx context.Context) {
 	opts.SetAutoReconnect(true)
 
 	s.broker = mqtt.NewClient(opts)
+
+	// 핸들러는 연결 전에 등록한다. 지속 세션은 CONNACK 직후 미ack 메시지를 곧바로 재전달하는데,
+	// 라우트가 Subscribe(OnConnect)에서만 만들어지면 그 사이에 도착한 메시지는 핸들러가 없어
+	// "Message will NOT be acknowledged" 로 버려지고 브로커에는 inflight로 남아 다음 재연결까지 멈춘다.
+	s.broker.AddRoute(dataTopicFilter, s.dataHandler(ctx))
+	s.broker.AddRoute(statusTopicFilter, s.statusHandler())
 }
 
 func (s *SensorCollectionWorker) markUnsubscribed() {

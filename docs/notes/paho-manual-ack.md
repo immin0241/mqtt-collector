@@ -21,6 +21,13 @@
 3. `CleanSession(false)`와 고정 `ClientID`가 있어야 브로커가 미확인 메시지를 보관·재전달한다.
 4. 핸들러가 블로킹 채널 push를 하는 현재 구조에서 채널이 가득 차면 paho 읽기 루프가 멈춘다. DB 장애가 keepalive(60s)·ping timeout(5s)보다 길면 연결이 끊길 수 있어 TC-02에서 확인한다.
 
+5. **라우트는 연결 전에 등록한다 (Phase 3에서 발견).** paho는 매칭되는 핸들러가 없으면 메시지를 버리고 ack하지 않는다
+   (`router.go:179-181`, "no handler was available. Message will NOT be acknowledged."). 지속 세션은 CONNACK 직후 미ack 메시지를
+   바로 재전달하는데, 라우트가 `OnConnect`의 `Subscribe`에서만 만들어지면 그 사이 도착한 메시지가 핸들러 없이 버려진다.
+   브로커에는 inflight로 남아 **다음 재연결까지 멈추고**, 쌓이면 `max_inflight_messages` 창을 채워 수신이 정지할 수 있다.
+   `CreateClient`에서 `AddRoute`로 연결 전에 등록해 해결했다. 통합 테스트 TC-16이 간헐 실패(전체 스위트 약 3~4회 중 1회)로 드러냈다.
+   - 증상 1: 재시작 후 수신 0건(센서당 300건 저장 후 정지). 증상 2: 센서당 1건 누락(재전달분 한 건이 버려짐).
+
 ## 미확인 (실험 필요)
 
 - 브로커 inflight 한도(`max_inflight_messages`)에 걸려 ack 대기 중인 메시지가 배치 크기(300)보다 작으면 배치가 채워지지 않고 `flushInterval`에만 의존하게 되는지.
