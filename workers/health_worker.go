@@ -40,11 +40,27 @@ func (w *HealthWorker) loadSensors(ctx context.Context) error {
 	return nil
 }
 
+// restoreSnapshot은 이전 실행이 남긴 센서 상태를 tracker에 되살린다. (재시작 직후 오경보·판정 공백 방지)
+func (w *HealthWorker) restoreSnapshot(ctx context.Context) error {
+	var rows []SensorStatusRow
+	if err := w.DB.WithContext(ctx).Find(&rows).Error; err != nil {
+		return err
+	}
+	n := w.Tracker.RestoreSnapshot(rows, time.Now())
+	slog.Info("sensor state restored", "restored", n, "stored", len(rows))
+	return nil
+}
+
 func (w *HealthWorker) Run(ctx context.Context) error {
 	if err := w.loadSensors(ctx); err != nil {
 		return err
 	}
-	// 시작 시점의 unknown 상태를 DB에 반영 (이전 실행의 stale한 online 제거)
+	// 이전 상태를 되살리지 못하면 모든 센서가 unknown으로 시작해, 침묵한 채 재시작된 센서가 영영 판정되지 않는다.
+	// 그래도 수집은 계속해야 하므로 실패해도 중단하지 않는다.
+	if err := w.restoreSnapshot(ctx); err != nil {
+		slog.Error("failed to restore sensor state; starting from unknown", "error", err)
+	}
+	// 새로 등록된 센서(unknown)를 DB에 반영
 	w.persist(ctx, false)
 
 	tick := time.NewTicker(w.Tick)
@@ -76,11 +92,17 @@ func (w *HealthWorker) Run(ctx context.Context) error {
 
 func (w *HealthWorker) persist(ctx context.Context, includeSeen bool) {
 	events, rows := w.Tracker.Drain(includeSeen)
-	if len(events) == 0 && len(rows) == 0 {
+	ingest := w.Tracker.DrainIngest()
+	if len(events) == 0 && len(rows) == 0 && len(ingest) == 0 {
 		return
 	}
 
 	err := w.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if len(ingest) > 0 {
+			if err := tx.Create(&ingest).Error; err != nil {
+				return err
+			}
+		}
 		if len(events) > 0 {
 			if err := tx.Create(&events).Error; err != nil {
 				return err
@@ -97,7 +119,11 @@ func (w *HealthWorker) persist(ctx context.Context, includeSeen bool) {
 	if err != nil {
 		slog.Error("failed to persist health state", "events", len(events), "rows", len(rows), "error", err)
 		w.Tracker.Requeue(events, rows)
+		w.Tracker.RequeueIngest(ingest)
 		return
+	}
+	for _, e := range ingest {
+		slog.Warn("ingest state change", "event", e.EventType, "message", e.Message)
 	}
 	for _, e := range events {
 		slog.Info("sensor state change", "sensor_id", e.SensorID, "event", e.EventType, "source", e.Source, "message", e.Message)

@@ -37,6 +37,12 @@ type runningApp struct {
 
 func (h *harness) startApp(t *testing.T, clientID string) *runningApp {
 	t.Helper()
+	return h.startAppWith(t, clientID, nil)
+}
+
+// startAppWith는 기본 설정을 mutate로 바꿔서 앱을 띄운다.
+func (h *harness) startAppWith(t *testing.T, clientID string, mutate func(*app.Config)) *runningApp {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &runningApp{cancel: cancel, done: make(chan error, 1)}
 	cfg := app.Config{
@@ -46,6 +52,9 @@ func (h *harness) startApp(t *testing.T, clientID string) *runningApp {
 		FlushInterval: 200 * time.Millisecond,
 		RetryInitial:  50 * time.Millisecond,
 		RetryMax:      500 * time.Millisecond,
+	}
+	if mutate != nil {
+		mutate(&cfg)
 	}
 	go func() {
 		err := app.Run(ctx, cfg)

@@ -39,6 +39,15 @@ type Config struct {
 	ShutdownTimeout  time.Duration
 	HealthMinTimeout time.Duration // 기본 2s
 	HealthTick       time.Duration // 기본 1s
+
+	// 센서 상태·경보 정책 (0 이면 기본값)
+	HealthTimeoutFactor float64       // 통신 오류: 예상 주기 × k 무수신. 기본 2
+	HealthGrace         time.Duration // 시작 직후 통신 오류 판정 유예
+	HealthSeenInterval  time.Duration // last_seen 스냅샷 반영 주기. 기본 60s
+	FlatlineCount       int           // 같은 값 연속 N회면 장애. 기본 10
+	OutOfRangeCount     int           // 범위 밖 값 연속 N회면 장애. 기본 3
+	AlertQueue          int           // 경보 후보 큐 크기. 기본 1000
+	AlertRefresh        time.Duration // 경보 규칙 재로딩 주기. 기본 10s
 }
 
 // Run은 ctx가 취소될 때까지 수집을 수행하고, 종료 절차(수신 중단 → drain → 최종 flush → ack → 연결 종료)를 마친 뒤 반환한다.
@@ -70,7 +79,19 @@ func Run(ctx context.Context, cfg Config) error {
 		defer sqlDB.Close()
 	}
 
-	tracker := workers.NewHealthTracker(cfg.HealthMinTimeout)
+	tracker := workers.NewHealthTrackerWithConfig(workers.HealthConfig{
+		MinTimeout:      cfg.HealthMinTimeout,
+		TimeoutFactor:   cfg.HealthTimeoutFactor,
+		Grace:           cfg.HealthGrace,
+		FlatlineCount:   cfg.FlatlineCount,
+		OutOfRangeCount: cfg.OutOfRangeCount,
+	})
+	workers.RegisterSensorStates(tracker)
+
+	if cfg.AlertQueue <= 0 {
+		cfg.AlertQueue = 1000
+	}
+	alerts := workers.NewAlertEngine(cfg.AlertQueue)
 
 	// 채널 상한: 가득 차면 수신 핸들러가 막혀 백프레셔가 걸린다.
 	data := make(chan workers.Envelope, cfg.ChannelSize)
@@ -85,6 +106,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Password:      cfg.Password,
 		DataChannel:   data,
 		Tracker:       tracker,
+		Alerts:        alerts,
 		Unsubscribed:  unsubscribed,
 		Flushed:       flushed,
 	}
@@ -106,9 +128,15 @@ func Run(ctx context.Context, cfg Config) error {
 		DB:           db,
 		Tracker:      tracker,
 		Tick:         cfg.HealthTick,
-		SeenInterval: 5 * time.Second,
+		SeenInterval: cfg.HealthSeenInterval,
 		Refresh:      time.Minute,
 	}
+	if health.SeenInterval <= 0 {
+		health.SeenInterval = time.Minute
+	}
+
+	alertWriter := &workers.AlertWriter{Store: workers.GormAlertStore{DB: db}, In: alerts.Out}
+	alertLoader := &workers.AlertRuleLoader{DB: db, Engine: alerts, Refresh: cfg.AlertRefresh}
 
 	g, gctx := errgroup.WithContext(ctx)
 	if cfg.MetricsAddr != "" {
@@ -117,6 +145,8 @@ func Run(ctx context.Context, cfg Config) error {
 	g.Go(func() error { return collector.Run(gctx) })
 	g.Go(func() error { return pusher.Run(gctx) })
 	g.Go(func() error { return health.Run(gctx) })
+	g.Go(func() error { return alertWriter.Run(gctx) })
+	g.Go(func() error { return alertLoader.Run(gctx) })
 	return g.Wait()
 }
 

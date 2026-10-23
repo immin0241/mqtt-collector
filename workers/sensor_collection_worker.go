@@ -30,6 +30,8 @@ type SensorCollectionWorker struct {
 	Password      string
 	DataChannel   chan Envelope
 	Tracker       *HealthTracker
+	// Alerts가 nil이 아니면 파싱된 측정값마다 경보 규칙을 메모리에서 평가한다. (수신 시점 평가)
+	Alerts *AlertEngine
 
 	// 종료 순서 조율 (nil 허용). 수신을 멈추면(구독은 유지) Unsubscribed를 닫고,
 	// DbPushWorker가 최종 flush/ack를 마칠 때까지(Flushed) 기다린 뒤 연결을 끊는다.
@@ -60,7 +62,10 @@ func (s *SensorCollectionWorker) dataHandler(ctx context.Context) mqtt.MessageHa
 		} else {
 			data.ReceivedAt = env.ReceivedAt
 			env.Data = data
-			s.Tracker.Touch(data.SensorID, data.Seq, data.ReceivedAt)
+			s.Tracker.ObserveData(data)
+			if s.Alerts != nil {
+				s.Alerts.Evaluate(data)
+			}
 		}
 
 		// 큐가 가득 차면 여기서 막혀 수신에 백프레셔가 걸린다.
