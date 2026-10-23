@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // fakeStore는 Store 대역이다. 삽입과 ack의 선후 관계를 같은 로그에 남긴다.
@@ -22,25 +23,36 @@ type fakeStore struct {
 	failTransient int // 앞의 N번 InsertRows 호출은 일시적 오류
 	badSensor     int // 이 sensor_id를 포함한 InsertRows는 FK 위반(23503)
 	calls         int
+	seen          map[string]bool // 중복 키 (sensor_id, seq, time)
 }
 
-func (f *fakeStore) InsertRows(ctx context.Context, rows []SensorData) error {
+func (f *fakeStore) InsertRows(ctx context.Context, rows []SensorData) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
 	if f.calls <= f.failTransient {
-		return errors.New("connection refused")
+		return 0, errors.New("connection refused")
 	}
 	for _, r := range rows {
 		if f.badSensor != 0 && r.SensorID == f.badSensor {
-			return &pgconn.PgError{Code: "23503", Message: "foreign key violation"}
+			return 0, &pgconn.PgError{Code: "23503", Message: "foreign key violation"}
 		}
 	}
+	var inserted int64
 	for _, r := range rows {
+		key := fmt.Sprintf("%d/%d/%d", r.SensorID, r.Seq, r.Time.UnixNano())
+		if f.seen == nil {
+			f.seen = map[string]bool{}
+		}
+		if f.seen[key] {
+			continue // ON CONFLICT DO NOTHING
+		}
+		f.seen[key] = true
 		f.rows = append(f.rows, r)
 		f.log = append(f.log, fmt.Sprintf("insert:%d/%d", r.SensorID, r.Seq))
+		inserted++
 	}
-	return nil
+	return inserted, nil
 }
 
 func (f *fakeStore) InsertRejected(ctx context.Context, row RejectedRow) error {
@@ -281,4 +293,32 @@ func TestShutdownFlushFailureLeavesMessagesUnacked(t *testing.T) {
 	if got := fs.countPrefix("ack:"); got != 0 {
 		t.Fatalf("acked %d messages despite failed commit", got)
 	}
+}
+
+// 같은 이벤트가 3번 와도 DB에는 1건이고, 중복 제거 지표가 2 증가하며, 3건 모두 ack한다. (TC-05)
+func TestDuplicateEventsDedupedAndCounted(t *testing.T) {
+	fs := &fakeStore{}
+	ch := make(chan Envelope, 10)
+	w := &DbPushWorker{Store: fs, DataChannel: ch, BatchSize: 3, FlushInterval: time.Hour}
+	committedBefore := testutil.ToFloat64(rowsCommitted)
+	dedupBefore := testutil.ToFloat64(dedupTotal)
+	cancel, done := startWorker(t, w)
+
+	for i := 0; i < 3; i++ {
+		ch <- envelope(fs, 7, 1)
+	}
+	eventually(t, func() bool { return fs.countPrefix("ack:") == 3 })
+
+	_, rows, _ := fs.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("stored %d rows, want 1", len(rows))
+	}
+	if got := testutil.ToFloat64(dedupTotal) - dedupBefore; got != 2 {
+		t.Fatalf("dedup_total increased by %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(rowsCommitted) - committedBefore; got != 1 {
+		t.Fatalf("rows_committed_total increased by %v, want 1", got)
+	}
+	cancel()
+	<-done
 }

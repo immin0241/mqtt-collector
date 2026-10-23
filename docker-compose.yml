@@ -60,6 +60,41 @@ services:
       retries: 5
       start_period: 10s
 
+  # 스키마 마이그레이션 (golang-migrate). 끝나면 종료한다.
+  migrate:
+    image: migrate/migrate:v4.18.3
+    volumes:
+      - ./migrations:/migrations:ro
+    command: ["-path", "/migrations", "-database", "postgres://go:go@postgres:5432/go?sslmode=disable", "up"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # 개발 시드 + 워커 role (seeds/*.sql, 파일명 순서, 멱등). 마이그레이션 뒤에 실행된다.
+  seed:
+    image: timescale/timescaledb:latest-pg18
+    environment:
+      PGHOST: postgres
+      PGUSER: go
+      PGPASSWORD: go
+      PGDATABASE: go
+      APP_WORKER_PASSWORD: ${APP_WORKER_PASSWORD:-worker}
+    volumes:
+      - ./seeds:/seeds:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        for f in /seeds/*.sql; do
+          echo "applying $$f"
+          psql -v ON_ERROR_STOP=1 -v worker_password="$$APP_WORKER_PASSWORD" -f "$$f"
+        done
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   app:
     build: .
     restart: on-failure
@@ -70,6 +105,18 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+
+  # 수집 경로 지표 (app:9090/metrics). UI는 http://localhost:9091
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on: [app]
 
   emulator:
     build:
@@ -205,6 +252,7 @@ services:
         condition: service_healthy
 
 volumes:
+  prometheus-data:
   broker1-data:
   postgres_data:
   grafana-data:

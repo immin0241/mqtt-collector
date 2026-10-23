@@ -1,3 +1,4 @@
 .env
 CLAUDE.md
 broker1/*
+.idea/

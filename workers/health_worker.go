@@ -2,7 +2,7 @@ package workers
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	"gorm.io/gorm"
@@ -63,7 +63,7 @@ func (w *HealthWorker) Run(ctx context.Context) error {
 			w.persist(ctx, true)
 		case <-refresh.C:
 			if err := w.loadSensors(ctx); err != nil {
-				log.Printf("Failed to refresh sensors: %v", err)
+				slog.Error("failed to refresh sensors", "error", err)
 			}
 		case <-ctx.Done():
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -95,11 +95,11 @@ func (w *HealthWorker) persist(ctx context.Context, includeSeen bool) {
 		return nil
 	})
 	if err != nil {
-		log.Printf("Failed to persist health state (%d events, %d rows): %v", len(events), len(rows), err)
+		slog.Error("failed to persist health state", "events", len(events), "rows", len(rows), "error", err)
 		w.Tracker.Requeue(events, rows)
 		return
 	}
 	for _, e := range events {
-		log.Printf("sensor %d: %s (%s) %s", e.SensorID, e.EventType, e.Source, e.Message)
+		slog.Info("sensor state change", "sensor_id", e.SensorID, "event", e.EventType, "source", e.Source, "message", e.Message)
 	}
 }
