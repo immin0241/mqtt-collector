@@ -1,4 +1,4 @@
-package main
+package reconcile
 
 import (
 	"strings"
@@ -9,7 +9,7 @@ func counts(m map[int][]int64) SeqCounts {
 	out := SeqCounts{}
 	for id, seqs := range m {
 		for _, s := range seqs {
-			out.add(id, s)
+			out.Add(id, s)
 		}
 	}
 	return out
@@ -92,7 +92,7 @@ func TestCompare_MissingSampleIsCappedButCountIsExact(t *testing.T) {
 		seqs = append(seqs, i)
 	}
 	got := find(t, Compare(counts(map[int][]int64{1: seqs}), SeqCounts{}, SeqCounts{}), 1)
-	if got.Missing != 100 || len(got.MissingSeqs) != sampleLimit || got.MissingSeqs[0] != 0 {
+	if got.Missing != 100 || len(got.MissingSeqs) != SampleLimit || got.MissingSeqs[0] != 0 {
 		t.Fatalf("report: missing=%d sample=%v", got.Missing, got.MissingSeqs)
 	}
 }

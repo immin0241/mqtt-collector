@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/immin0241/webframework-project-mqtt-collector/internal/reconcile"
 )
 
 func main() {
@@ -49,18 +51,18 @@ func main() {
 		fatal("--sensors: %v", err)
 	}
 
-	var pub SeqCounts
+	var pub reconcile.SeqCounts
 	if *published != "" {
 		f, err := os.Open(*published)
 		if err != nil {
 			fatal("%v", err)
 		}
-		pub, err = ParsePublished(f)
+		pub, err = reconcile.ParsePublished(f)
 		f.Close()
 		if err != nil {
 			fatal("%v", err)
 		}
-		pub = filterSensors(pub, filter)
+		pub = reconcile.FilterSensors(pub, filter)
 	}
 
 	ctx := context.Background()
@@ -70,29 +72,13 @@ func main() {
 	}
 	defer conn.Close(ctx)
 
-	stored, err := queryCounts(ctx, conn,
-		`SELECT sensor_id, seq, count(*) FROM sensor_data
-		  WHERE received_at >= $1 AND received_at < $2 GROUP BY sensor_id, seq`, since, until)
+	snap, err := reconcile.LoadSnapshot(ctx, conn, since, until)
 	if err != nil {
-		fatal("query sensor_data: %v", err)
+		fatal("query: %v", err)
 	}
-	rejected, err := queryCounts(ctx, conn,
-		`SELECT sensor_id, seq, count(*) FROM sensor_data_rejected
-		  WHERE sensor_id IS NOT NULL AND seq IS NOT NULL AND received_at >= $1 AND received_at < $2
-		  GROUP BY sensor_id, seq`, since, until)
-	if err != nil {
-		fatal("query sensor_data_rejected: %v", err)
-	}
-	var unattributed int
-	if err := conn.QueryRow(ctx,
-		`SELECT count(*) FROM sensor_data_rejected
-		  WHERE (sensor_id IS NULL OR seq IS NULL) AND received_at >= $1 AND received_at < $2`,
-		since, until).Scan(&unattributed); err != nil {
-		fatal("query sensor_data_rejected: %v", err)
-	}
-	stored, rejected = filterSensors(stored, filter), filterSensors(rejected, filter)
+	stored, rejected := reconcile.FilterSensors(snap.Stored, filter), reconcile.FilterSensors(snap.Rejected, filter)
 
-	reports := Compare(pub, stored, rejected)
+	reports := reconcile.Compare(pub, stored, rejected)
 	ok := true
 	for _, r := range reports {
 		ok = ok && r.OK()
@@ -101,34 +87,13 @@ func main() {
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(map[string]any{"ok": ok, "sensors": reports, "rejected_unattributed": unattributed})
+		_ = enc.Encode(map[string]any{"ok": ok, "sensors": reports, "rejected_unattributed": snap.RejectedUnattributed})
 	} else {
-		printTable(reports, unattributed, *published == "")
+		printTable(reports, snap.RejectedUnattributed, *published == "")
 	}
 	if !ok {
 		os.Exit(1)
 	}
-}
-
-func queryCounts(ctx context.Context, conn *pgx.Conn, sql string, since, until time.Time) (SeqCounts, error) {
-	rows, err := conn.Query(ctx, sql, since, until)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := SeqCounts{}
-	for rows.Next() {
-		var id int
-		var seq, n int64
-		if err := rows.Scan(&id, &seq, &n); err != nil {
-			return nil, err
-		}
-		if out[id] == nil {
-			out[id] = map[int64]int{}
-		}
-		out[id][seq] = int(n)
-	}
-	return out, rows.Err()
 }
 
 func parseSensors(s string) (map[int]bool, error) {
@@ -146,20 +111,7 @@ func parseSensors(s string) (map[int]bool, error) {
 	return out, nil
 }
 
-func filterSensors(c SeqCounts, keep map[int]bool) SeqCounts {
-	if keep == nil || c == nil {
-		return c
-	}
-	out := SeqCounts{}
-	for id, m := range c {
-		if keep[id] {
-			out[id] = m
-		}
-	}
-	return out
-}
-
-func printTable(reports []SensorReport, unattributed int, contiguousMode bool) {
+func printTable(reports []reconcile.SensorReport, unattributed int, contiguousMode bool) {
 	if contiguousMode {
 		fmt.Println("(발행 로그 없음: 저장된 seq의 min~max를 기대로 삼았다. 꼬리 쪽 유실은 확인할 수 없다)")
 	}
@@ -174,10 +126,10 @@ func printTable(reports []SensorReport, unattributed int, contiguousMode bool) {
 			r.SensorID, r.Published, r.Stored, r.Rejected, r.Missing, r.Unexpected,
 			r.DBDuplicates, r.PublishedDuplicates, mark)
 		if len(r.MissingSeqs) > 0 {
-			fmt.Printf("         missing seq (최대 %d개): %v\n", sampleLimit, r.MissingSeqs)
+			fmt.Printf("         missing seq (최대 %d개): %v\n", reconcile.SampleLimit, r.MissingSeqs)
 		}
 		if len(r.UnexpectedSeqs) > 0 {
-			fmt.Printf("         unexpected seq (최대 %d개): %v\n", sampleLimit, r.UnexpectedSeqs)
+			fmt.Printf("         unexpected seq (최대 %d개): %v\n", reconcile.SampleLimit, r.UnexpectedSeqs)
 		}
 	}
 	if unattributed > 0 {
