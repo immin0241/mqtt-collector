@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,6 +45,7 @@ type SensorCollectionWorker struct {
 // 파싱에 실패한 메시지도 원문 그대로 큐로 넘겨 격리 테이블에 남긴다.
 func (s *SensorCollectionWorker) dataHandler(ctx context.Context) mqtt.MessageHandler {
 	return func(client mqtt.Client, msg mqtt.Message) {
+		messagesReceived.Inc()
 		env := Envelope{
 			Topic:      msg.Topic(),
 			Payload:    msg.Payload(),
@@ -54,7 +55,7 @@ func (s *SensorCollectionWorker) dataHandler(ctx context.Context) mqtt.MessageHa
 
 		var data SensorData
 		if err := json.Unmarshal(env.Payload, &data); err != nil {
-			log.Printf("Invalid payload on %s, will be rejected: %v", env.Topic, err)
+			slog.Warn("invalid payload; will be rejected", "topic", env.Topic, "error", err)
 			env.ParseErr = err
 		} else {
 			data.ReceivedAt = env.ReceivedAt
@@ -88,7 +89,7 @@ func (s *SensorCollectionWorker) statusHandler() mqtt.MessageHandler {
 		}
 		id, err := strconv.Atoi(parts[2])
 		if err != nil {
-			log.Printf("Skipping status with invalid sensor id on %s", msg.Topic())
+			slog.Warn("skipping status with invalid sensor id", "topic", msg.Topic())
 			return
 		}
 
@@ -98,7 +99,7 @@ func (s *SensorCollectionWorker) statusHandler() mqtt.MessageHandler {
 		case StatusOffline:
 			s.Tracker.SetStatus(id, StatusOffline, time.Now())
 		default:
-			log.Printf("Skipping unknown status payload %q on %s", msg.Payload(), msg.Topic())
+			slog.Warn("skipping unknown status payload", "topic", msg.Topic(), "payload", string(msg.Payload()))
 		}
 	}
 }
@@ -112,15 +113,15 @@ func (s *SensorCollectionWorker) subscribe(ctx context.Context, client mqtt.Clie
 		token := client.Subscribe(topic, 1, handler)
 		token.Wait()
 		if err := token.Error(); err != nil {
-			log.Printf("Failed to subscribe to %s: %v", topic, err)
+			slog.Error("subscribe failed", "topic", topic, "error", err)
 			continue
 		}
-		log.Printf("Subscribed to topic: %s", topic)
+		slog.Info("subscribed", "topic", topic)
 	}
 }
 
 func (s *SensorCollectionWorker) CreateClient(ctx context.Context) {
-	fmt.Printf("Connecting to %s\n", s.BrokerAddress)
+	slog.Info("connecting to broker", "broker", s.BrokerAddress, "client_id", s.ClientID)
 
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(s.BrokerAddress)
@@ -138,12 +139,12 @@ func (s *SensorCollectionWorker) CreateClient(ctx context.Context) {
 
 	// 재연결 시 구독이 사라질 수 있으므로 OnConnect에서 매번 구독한다.
 	opts.OnConnect = func(client mqtt.Client) {
-		fmt.Println("Connected successfully to the broker!")
+		slog.Info("connected to broker")
 		s.Tracker.SetIngestHealthy(true, time.Now())
 		s.subscribe(ctx, client)
 	}
 	opts.OnConnectionLost = func(client mqtt.Client, err error) {
-		log.Printf("Connection lost: %v", err)
+		slog.Warn("connection lost", "error", err)
 		s.Tracker.SetIngestHealthy(false, time.Now())
 	}
 
@@ -180,7 +181,7 @@ func (s *SensorCollectionWorker) Run(ctx context.Context) error {
 		token := s.broker.Unsubscribe(topic)
 		token.Wait()
 		if token.Error() != nil {
-			log.Printf("Failed to unsubscribe from %s: %v", topic, token.Error())
+			slog.Error("unsubscribe failed", "topic", topic, "error", token.Error())
 		}
 	}
 	s.markUnsubscribed()
@@ -193,7 +194,7 @@ func (s *SensorCollectionWorker) Run(ctx context.Context) error {
 		select {
 		case <-s.Flushed:
 		case <-time.After(wait):
-			log.Printf("Timed out waiting for final flush; disconnecting")
+			slog.Warn("timed out waiting for final flush; disconnecting")
 		}
 	}
 

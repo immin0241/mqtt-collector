@@ -2,7 +2,7 @@ package workers
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 )
 
@@ -101,9 +101,13 @@ func (w *DbPushWorker) Run(ctx context.Context) error {
 		if len(batch) == 0 {
 			return nil
 		}
+		start := time.Now()
 		if err := w.persist(flushCtx, batch); err != nil {
 			return err
 		}
+		batchSize.Observe(float64(len(batch)))
+		batchFlushSeconds.Observe(time.Since(start).Seconds())
+		lastFlushTimestamp.SetToCurrentTime()
 		for i := range batch {
 			if batch[i].Ack != nil {
 				batch[i].Ack()
@@ -145,7 +149,7 @@ loop:
 		select {
 		case <-w.Unsubscribed:
 		case <-shutdownCtx.Done():
-			log.Printf("Timed out waiting for unsubscribe; draining anyway")
+			slog.Warn("timed out waiting for unsubscribe; draining anyway")
 		}
 	}
 
@@ -155,7 +159,7 @@ loop:
 			batch = append(batch, env)
 			if len(batch) >= w.BatchSize {
 				if err := flush(shutdownCtx); err != nil {
-					log.Printf("Final flush failed, %d messages left unacked (broker will redeliver): %v", len(batch), err)
+					slog.Error("final flush failed; messages left unacked (broker will redeliver)", "unacked", len(batch), "error", err)
 					return nil
 				}
 			}
@@ -164,7 +168,7 @@ loop:
 		}
 	}
 	if err := flush(shutdownCtx); err != nil {
-		log.Printf("Final flush failed, %d messages left unacked (broker will redeliver): %v", len(batch), err)
+		slog.Error("final flush failed; messages left unacked (broker will redeliver)", "unacked", len(batch), "error", err)
 	}
 	return nil
 }
@@ -195,8 +199,19 @@ func (w *DbPushWorker) insertBisect(ctx context.Context, envs []Envelope) error 
 		rows[i] = env.Data
 	}
 
-	err := w.retry(ctx, true, func() error { return w.Store.InsertRows(ctx, rows) })
+	var inserted int64
+	err := w.retry(ctx, true, func() (err error) {
+		inserted, err = w.Store.InsertRows(ctx, rows)
+		return err
+	}, "rows", len(rows), "first_sensor_id", envs[0].Data.SensorID, "first_seq", envs[0].Data.Seq)
 	if err == nil {
+		// 커밋 직후: 적재량, 중복 제거량, 수신~커밋 지연을 기록한다.
+		rowsCommitted.Add(float64(inserted))
+		dedupTotal.Add(float64(int64(len(rows)) - inserted))
+		now := time.Now()
+		for _, env := range envs {
+			ingestLagSeconds.Observe(now.Sub(env.ReceivedAt).Seconds())
+		}
 		return nil
 	}
 	if ctx.Err() != nil || ClassifyDBError(err) != KindPermanent {
@@ -225,16 +240,27 @@ func (w *DbPushWorker) reject(ctx context.Context, env Envelope, code, msg strin
 		id, seq := env.Data.SensorID, env.Data.Seq
 		row.SensorID, row.Seq = &id, &seq
 	}
-	log.Printf("Rejecting message topic=%s sensor_id=%v seq=%v code=%s: %s",
-		env.Topic, derefOr(row.SensorID, -1), derefOr(row.Seq, -1), code, msg)
+	reason := "db"
+	if env.ParseErr != nil {
+		reason = "parse"
+	}
+	slog.Warn("message rejected",
+		"topic", env.Topic, "sensor_id", derefOr(row.SensorID, -1), "seq", derefOr(row.Seq, -1),
+		"code", code, "reason", reason, "error", msg)
 
 	// 격리 기록은 오류 종류와 무관하게 성공할 때까지 재시도한다. (여기서 포기하면 메시지가 사라진다)
-	return w.retry(ctx, false, func() error { return w.Store.InsertRejected(ctx, row) })
+	err := w.retry(ctx, false, func() error { return w.Store.InsertRejected(ctx, row) },
+		"topic", env.Topic, "sensor_id", derefOr(row.SensorID, -1), "seq", derefOr(row.Seq, -1))
+	if err == nil {
+		rowsRejected.WithLabelValues(reason).Inc()
+	}
+	return err
 }
 
 // retry는 op를 성공할 때까지 지수 백오프로 반복한다. 반환하는 경우: 성공, ctx 취소,
 // 또는 classify가 true일 때의 영구 오류. 재시도 중에는 호출 측(Run 루프)이 막혀 채널이 차므로 수신이 백프레셔를 받는다.
-func (w *DbPushWorker) retry(ctx context.Context, classify bool, op func() error) error {
+// attrs는 실패 로그에 덧붙일 구조화 필드(sensor_id, seq 등)다.
+func (w *DbPushWorker) retry(ctx context.Context, classify bool, op func() error, attrs ...any) error {
 	backoff := w.RetryInitial
 	for attempt := 1; ; attempt++ {
 		err := op()
@@ -244,11 +270,14 @@ func (w *DbPushWorker) retry(ctx context.Context, classify bool, op func() error
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if classify && ClassifyDBError(err) == KindPermanent {
+		kind := ClassifyDBError(err)
+		dbErrors.WithLabelValues(string(kind)).Inc()
+		if classify && kind == KindPermanent {
 			return err
 		}
 
-		log.Printf("DB error (attempt %d), retrying in %s: %v", attempt, backoff, err)
+		slog.Warn("db error; retrying",
+			append([]any{"attempt", attempt, "backoff", backoff, "kind", string(kind), "error", err}, attrs...)...)
 		select {
 		case <-time.After(backoff):
 		case <-ctx.Done():
