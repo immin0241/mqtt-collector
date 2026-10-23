@@ -9,32 +9,28 @@ import asyncio
 import json
 import random
 import socket
+import time
 from datetime import datetime, timezone
 
 import aiomqtt
 
+import model as physics
+from seqstore import SeqStore
 
-def build_reading(sensor_id: int, sensor_type: str, seq: int) -> dict:
-    """DB의 sensor_data 컬럼에 대응하는 측정값을 생성합니다."""
-    result = {
-        "sensor_id": sensor_id,
-        "seq": seq,
-        "time": datetime.now(timezone.utc).isoformat(),
-        "tilt_x": None,
-        "tilt_y": None,
-        "crack_width": None,
-        "temperature": None,
-    }
 
-    if sensor_type == "tilt":
-        result["tilt_x"] = round(random.uniform(-1.0, 1.0), 6)
-        result["tilt_y"] = round(random.uniform(-1.0, 1.0), 6)
-    elif sensor_type == "crack":
-        result["crack_width"] = round(random.uniform(0.0, 5.0), 4)
-    elif sensor_type == "env":
-        result["temperature"] = round(random.uniform(-10.0, 40.0), 2)
-
-    return result
+def build_reading(
+    sensor_id: int,
+    sensor_type: str,
+    seq: int,
+    seed: int = 0,
+    params: physics.ModelParams | None = None,
+    t0: float | None = None,
+) -> dict:
+    """DB의 sensor_data 컬럼에 대응하는 측정값을 물리 모델로 생성한다. 시각은 실제 시계를 쓴다."""
+    now = datetime.now(timezone.utc)
+    params = params or physics.default_params(seed, sensor_id)
+    values = physics.reading(seed, sensor_id, sensor_type, params, now.timestamp(), now.timestamp() if t0 is None else t0, seq)
+    return {"sensor_id": sensor_id, "seq": seq, "time": now.isoformat(), **values}
 
 
 def command_topic(sensor_id: int) -> str:
@@ -53,6 +49,9 @@ class Sensor:
         qos: int = 1,
         topic_prefix: str = "sensors",
         keepalive: int = 5,
+        seed: int = 0,
+        seq_state: str | None = None,
+        publish_log: str | None = None,
     ):
         self.id = sensor_id
         self.type = sensor_type
@@ -65,7 +64,13 @@ class Sensor:
         self.data_topic = f"{topic_prefix}/{sensor_type}/{sensor_id}"
         self.status_topic = f"{self.data_topic}/status"
 
-        self.seq = 0
+        self.seed = seed
+        self.params = physics.default_params(seed, sensor_id)
+        self.t0 = time.time()  # 진행 추세의 기준 시각
+        self._seqs = SeqStore(seq_state)
+        self._publish_log = open(publish_log, "a", buffering=1, encoding="utf-8") if publish_log else None
+
+        self.seq = self._seqs.snapshot().get(sensor_id, 0)  # 재시작 후에도 이어서 발행한다
         self.state = "starting"  # starting | online | paused | reconnecting | dead
         self.paused = False
         self.published = 0
@@ -86,6 +91,9 @@ class Sensor:
             self.paused = False
         elif cmd == "interval":
             self.interval = max(0.01, float(arg))
+        elif cmd == "model":
+            # model:{"crack_temp_sensitivity":0.05} - 계수 일부를 바꾼다. 잘못된 값이면 ValueError 로 무시된다.
+            self.params = self.params.updated(**json.loads(arg))
         elif cmd == "kill":
             self.stop(graceful=(arg != "abrupt"))
 
@@ -104,6 +112,7 @@ class Sensor:
                 self.state = "reconnecting"
                 await asyncio.sleep(2.0)
         self.state = "dead"
+        self._seqs.save()
 
     async def _session(self):
         will = aiomqtt.Will(self.status_topic, payload="offline", qos=1, retain=True)
@@ -143,7 +152,7 @@ class Sensor:
             payload = message.payload.decode() if isinstance(message.payload, bytes) else str(message.payload)
             try:
                 self._apply_command(payload)
-            except ValueError:
+            except (ValueError, TypeError):
                 continue
             if not self._exit.is_set():
                 self.state = "paused" if self.paused else "online"
@@ -153,8 +162,15 @@ class Sensor:
         await asyncio.sleep(random.uniform(0.0, self.interval))
         while True:
             if not self.paused:
-                payload = json.dumps(build_reading(self.id, self.type, self.seq), separators=(",", ":"))
+                reading = build_reading(self.id, self.type, self.seq, self.seed, self.params, self.t0)
+                payload = json.dumps(reading, separators=(",", ":"))
                 await client.publish(self.data_topic, payload.encode(), qos=self.qos)
+                # PUBACK 을 받은 뒤에만 발행 로그와 seq 상태에 반영한다.
+                if self._publish_log:
+                    self._publish_log.write(json.dumps({"sensor_id": self.id, "seq": self.seq}, separators=(",", ":")) + "\n")
+                self._seqs.acked(self.id, self.seq)
+                if self.seq % 50 == 0:
+                    self._seqs.save()
                 self.seq += 1
                 self.published += 1
             jitter = random.uniform(-self.jitter, self.jitter)

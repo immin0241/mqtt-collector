@@ -20,3 +20,15 @@ jobs:
       # 단위 + 통합(testcontainers: TimescaleDB, Mosquitto). ubuntu 러너에는 Docker가 있다.
       - name: test
         run: go test -race -count=1 -timeout 15m ./...
+
+  emulator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: mqtt_emulator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: unit tests
+        run: uv run python -m unittest discover -s tests -t .
