@@ -72,3 +72,49 @@ func RegisterChannelDepth(ch chan Envelope) {
 		})
 	})
 }
+
+// 경보 지표
+var (
+	alertsCreated = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "alerts_created_total",
+		Help: "alert_event에 새로 기록된 경보 수 (재전달로 인한 중복 제외)",
+	})
+	alertsDeduped = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "alerts_deduped_total",
+		Help: "(rule_id, sensor_id, seq) 중복 키로 건너뛴 경보 수",
+	})
+	alertsDropped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "alerts_dropped_total",
+		Help: "기록하지 못한 경보 수",
+	}, []string{"reason"}) // queue_full | rejected
+	alertLatencySeconds = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "alert_latency_seconds",
+		Help:    "수신 핸들러의 규칙 평가부터 경보가 DB에 기록되기까지 걸린 시간",
+		Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2, 5, 10},
+	})
+)
+
+var (
+	sensorStateOnce sync.Once
+	sensorStateSrc  atomic.Pointer[HealthTracker]
+)
+
+// RegisterSensorStates는 상태별 센서 수 지표(sensors_by_state{state})를 등록한다.
+// 한 프로세스에서 여러 번 호출해도 지표는 한 번만 등록하고 마지막으로 넘긴 tracker를 읽는다.
+func RegisterSensorStates(t *HealthTracker) {
+	sensorStateSrc.Store(t)
+	sensorStateOnce.Do(func() {
+		for _, st := range []SensorStatus{StatusUnknown, StatusOnline, StatusOffline, StatusFaulty} {
+			promauto.NewGaugeFunc(prometheus.GaugeOpts{
+				Name:        "sensors_by_state",
+				Help:        "상태별 센서 수",
+				ConstLabels: prometheus.Labels{"state": string(st)},
+			}, func() float64 {
+				if tr := sensorStateSrc.Load(); tr != nil {
+					return float64(tr.CountByState()[st])
+				}
+				return 0
+			})
+		}
+	})
+}
