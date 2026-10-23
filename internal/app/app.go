@@ -41,7 +41,7 @@ type Config struct {
 	HealthTick       time.Duration // 기본 1s
 }
 
-// Run은 ctx가 취소될 때까지 수집을 수행하고, 종료 절차(구독 해제 → drain → 최종 flush → ack → 연결 종료)를 마친 뒤 반환한다.
+// Run은 ctx가 취소될 때까지 수집을 수행하고, 종료 절차(수신 중단 → drain → 최종 flush → ack → 연결 종료)를 마친 뒤 반환한다.
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.ClientID == "" {
 		return errors.New("ClientID is required (persistent session needs a stable client id)")

@@ -52,7 +52,7 @@ type DbPushWorker struct {
 	RetryMax        time.Duration
 	ShutdownTimeout time.Duration
 
-	// 종료 순서 조율 (nil 허용). Unsubscribed는 수신 측이 구독 해제를 마치면 닫고,
+	// 종료 순서 조율 (nil 허용). Unsubscribed는 수신 측이 수신을 멈추면(구독은 유지, ADR-0007) 닫고,
 	// Flushed는 이 워커가 최종 flush와 ack를 마치면 닫는다.
 	Unsubscribed <-chan struct{}
 	Flushed      chan struct{}
@@ -147,7 +147,7 @@ loop:
 		}
 	}
 
-	// 종료: 구독 해제 대기 -> 채널 drain -> 최종 flush -> ack. 실패한 배치는 ack하지 않아 브로커가 재전달한다.
+	// 종료: 수신 중단 대기 -> 채널 drain -> 최종 flush -> ack. 실패한 배치는 ack하지 않아 브로커가 재전달한다.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), w.ShutdownTimeout)
 	defer cancel()
 
