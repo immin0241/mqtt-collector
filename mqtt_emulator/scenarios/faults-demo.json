@@ -1,0 +1,51 @@
+{
+  "name": "faults-demo",
+  "seed": 7,
+  "start_time": "2026-01-01T00:00:00Z",
+  "interval_seconds": 1.0,
+  "count": 600,
+  "rate": 200,
+  "qos": 1,
+  "sensors": [
+    {
+      "id": 201,
+      "type": "tilt"
+    },
+    {
+      "id": 202,
+      "type": "crack",
+      "model": {
+        "crack_trend_per_day": 0.5
+      }
+    },
+    {
+      "id": 203,
+      "type": "env"
+    },
+    {
+      "id": 204,
+      "type": "crack"
+    }
+  ],
+  "faults": {
+    "duplicate_ratio": 0.05,
+    "duplicate_copies": 2,
+    "malformed_ratio": 0.01,
+    "out_of_range_ratio": 0.01,
+    "silence": [
+      {
+        "sensor_id": 203,
+        "from": 200,
+        "to": 260
+      }
+    ],
+    "flatline": [
+      {
+        "sensor_id": 204,
+        "from": 300,
+        "to": 380
+      }
+    ],
+    "vendor_b_sensors": []
+  }
+}

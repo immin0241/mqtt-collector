@@ -1,0 +1,51 @@
+{
+  "name": "tc01",
+  "seed": 1,
+  "start_time": "2026-01-01T00:00:00Z",
+  "interval_seconds": 1.0,
+  "count": 1000,
+  "rate": 500,
+  "qos": 1,
+  "sensors": [
+    {
+      "id": 201,
+      "type": "crack"
+    },
+    {
+      "id": 202,
+      "type": "env"
+    },
+    {
+      "id": 203,
+      "type": "tilt"
+    },
+    {
+      "id": 204,
+      "type": "crack"
+    },
+    {
+      "id": 205,
+      "type": "env"
+    },
+    {
+      "id": 206,
+      "type": "tilt"
+    },
+    {
+      "id": 207,
+      "type": "crack"
+    },
+    {
+      "id": 208,
+      "type": "env"
+    },
+    {
+      "id": 209,
+      "type": "tilt"
+    },
+    {
+      "id": 210,
+      "type": "crack"
+    }
+  ]
+}

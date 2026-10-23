@@ -14,11 +14,17 @@ import aiomqtt
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+import model as physics
+from seqstore import SeqStore
 from sensor import Sensor, build_reading, command_topic
 
 
 MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+SEED = int(os.getenv("SEED", "0"))
+# 선택: seq 를 파일에 보존해 재시작 후에도 이어서 발행한다 / PUBACK 받은 전송을 대조용 로그로 남긴다.
+SEQ_STATE = os.getenv("SEQ_STATE") or None
+PUBLISH_LOG = os.getenv("PUBLISH_LOG") or None
 
 WORKERS = 32
 QUEUE_CAPACITY = 5000
@@ -49,10 +55,12 @@ class PublisherConfig(BaseModel):
 
 
 class Message:
-    def __init__(self, topic: str, payload: bytes, due: float):
+    def __init__(self, topic: str, payload: bytes, due: float, sensor_id: int = 0, seq: int = 0):
         self.topic = topic
         self.payload = payload
         self.due = due
+        self.sensor_id = sensor_id
+        self.seq = seq
 
 
 config = PublisherConfig()
@@ -65,8 +73,16 @@ queue: asyncio.Queue[Message] = asyncio.Queue(
 
 stop_event: asyncio.Event | None = None
 
+seq_store = SeqStore(SEQ_STATE)
+publish_log = open(PUBLISH_LOG, "a", buffering=1, encoding="utf-8") if PUBLISH_LOG else None
+
 # 센서별 sequence는 설정 변경 이후에도 유지합니다.
-sequences: dict[int, int] = {}
+sequences: dict[int, int] = seq_store.snapshot()
+
+# shared 모드 데모 제어: 계수 덮어쓰기, 침묵 센서
+model_overrides: dict[int, physics.ModelParams] = {}
+silenced: set[int] = set()
+run_epoch = time.time()  # 진행 추세의 기준 시각
 
 metrics = {
     "publish_completed": 0,
@@ -84,8 +100,14 @@ started_at = 0.0
 hosted: dict[int, tuple[Sensor, asyncio.Task]] = {}
 
 
+def model_params(sensor_id: int) -> physics.ModelParams:
+    return model_overrides.get(sensor_id) or physics.default_params(SEED, sensor_id)
+
+
 def generate_reading(sensor: SensorSpec) -> dict:
-    return build_reading(sensor.id, sensor.sensor_type, sequences.get(sensor.id, 0))
+    return build_reading(
+        sensor.id, sensor.sensor_type, sequences.get(sensor.id, 0), SEED, model_params(sensor.id), run_epoch
+    )
 
 
 async def scheduler():
@@ -151,22 +173,25 @@ async def scheduler():
         if sensor is None:
             continue
 
-        payload = generate_reading(sensor)
+        if sensor.id not in silenced:
+            payload = generate_reading(sensor)
 
-        msg = Message(
-            topic=f"{cfg.topic_prefix}/{sensor.sensor_type}/{sensor.id}",
-            payload=json.dumps(
-                payload, separators=(",", ":")
-            ).encode("utf-8"),
-            due=due,
-        )
+            msg = Message(
+                topic=f"{cfg.topic_prefix}/{sensor.sensor_type}/{sensor.id}",
+                payload=json.dumps(
+                    payload, separators=(",", ":")
+                ).encode("utf-8"),
+                due=due,
+                sensor_id=sensor.id,
+                seq=payload["seq"],
+            )
 
-        try:
-            queue.put_nowait(msg)
-        except asyncio.QueueFull:
-            metrics["dropped_queue_full"] += 1
+            try:
+                queue.put_nowait(msg)
+            except asyncio.QueueFull:
+                metrics["dropped_queue_full"] += 1
 
-        sequences[sensor.id] = payload["seq"] + 1
+            sequences[sensor.id] = payload["seq"] + 1
 
         jitter = random.uniform(
             -cfg.jitter_fraction, cfg.jitter_fraction
@@ -204,7 +229,14 @@ async def publisher_worker(client: aiomqtt.Client):
 
             end = time.monotonic()
 
+            # PUBACK 을 받은 전송만 발행 로그와 seq 상태에 올린다. (발행 측 유실과 수집 측 유실을 구분하는 근거)
+            if publish_log:
+                publish_log.write(json.dumps({"sensor_id": msg.sensor_id, "seq": msg.seq}, separators=(",", ":")) + "\n")
+            seq_store.acked(msg.sensor_id, msg.seq)
+
             metrics["publish_completed"] += 1
+            if metrics["publish_completed"] % 200 == 0:
+                seq_store.save()
             metrics["schedule_lag_total_ms"] += max(
                 0.0, (start - msg.due) * 1000
             )
@@ -262,6 +294,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         stop_event.set()
+        seq_store.save()
         for sensor, sensor_task in hosted.values():
             sensor.stop(graceful=True)
             sensor_task.cancel()
@@ -337,16 +370,54 @@ async def get_sensors():
     ]
 
 
+def _is_shared_sensor(sensor_id: int) -> bool:
+    return config.mode == "shared" and any(s.id == sensor_id for s in config.sensors)
+
+
 @app.post("/sensors/{sensor_id}/pause")
 async def pause_sensor(sensor_id: int):
-    await send_command(sensor_id, "pause")
+    """센서를 침묵시킨다. shared 모드는 발행만 멈추고, per_sensor/컨테이너 센서는 명령 토픽으로 전달한다."""
+    if _is_shared_sensor(sensor_id):
+        silenced.add(sensor_id)
+    else:
+        await send_command(sensor_id, "pause")
     return {"sensor_id": sensor_id, "command": "pause"}
 
 
 @app.post("/sensors/{sensor_id}/resume")
 async def resume_sensor(sensor_id: int):
-    await send_command(sensor_id, "resume")
+    if _is_shared_sensor(sensor_id):
+        silenced.discard(sensor_id)
+    else:
+        await send_command(sensor_id, "resume")
     return {"sensor_id": sensor_id, "command": "resume"}
+
+
+@app.get("/sensors/{sensor_id}/model")
+async def get_sensor_model(sensor_id: int):
+    """shared 모드 센서의 현재 물리 모델 계수."""
+    if not _is_shared_sensor(sensor_id):
+        raise HTTPException(status_code=404, detail="not a shared-mode sensor")
+    return {"sensor_id": sensor_id, "seed": SEED, "params": model_params(sensor_id).to_dict()}
+
+
+@app.put("/sensors/{sensor_id}/model")
+async def set_sensor_model(sensor_id: int, changes: dict[str, float]):
+    """계수 일부를 바꾼다. 예: {"crack_trend_per_day": 0.5} 로 균열 진행을 시연한다.
+    shared 모드는 즉시 반영하고, per_sensor/컨테이너 센서는 명령 토픽(model:<json>)으로 전달한다."""
+    if _is_shared_sensor(sensor_id):
+        try:
+            model_overrides[sensor_id] = model_params(sensor_id).updated(**changes)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        return {"sensor_id": sensor_id, "params": model_overrides[sensor_id].to_dict()}
+
+    try:
+        physics.ModelParams().updated(**changes)  # 보내기 전에 검증한다
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    await send_command(sensor_id, "model:" + json.dumps(changes, separators=(",", ":")))
+    return {"sensor_id": sensor_id, "command": "model", "changes": changes}
 
 
 @app.post("/sensors/{sensor_id}/kill")

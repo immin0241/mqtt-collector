@@ -1,6 +1,6 @@
 """센서 1개를 프로세스(컨테이너) 1개로 실행한다.
 
-SENSOR_ID, SENSOR_TYPE 필수. docker kill(SIGKILL)은 LWT 경로, docker stop(SIGTERM)은 정상 종료 경로.
+SENSOR_ID, SENSOR_TYPE 필수. SEED(물리 모델 시드), SEQ_STATE(seq 보존 파일), PUBLISH_LOG(PUBACK 받은 seq 로그)는 선택. docker kill(SIGKILL)은 LWT 경로, docker stop(SIGTERM)은 정상 종료 경로.
 """
 import asyncio
 import os
@@ -20,6 +20,9 @@ async def main():
         qos=int(os.getenv("QOS", "1")),
         topic_prefix=os.getenv("TOPIC_PREFIX", "sensors"),
         keepalive=int(os.getenv("KEEPALIVE_SECONDS", "5")),
+        seed=int(os.getenv("SEED", "0")),
+        seq_state=os.getenv("SEQ_STATE") or None,
+        publish_log=os.getenv("PUBLISH_LOG") or None,
     )
 
     loop = asyncio.get_running_loop()
