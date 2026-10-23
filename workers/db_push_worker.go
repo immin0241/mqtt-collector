@@ -56,9 +56,15 @@ type DbPushWorker struct {
 	// Flushed는 이 워커가 최종 flush와 ack를 마치면 닫는다.
 	Unsubscribed <-chan struct{}
 	Flushed      chan struct{}
+
+	// Clock이 nil이면 실제 시계를 쓴다. 테스트에서 flush 주기와 백오프를 제어할 때 주입한다.
+	Clock Clock
 }
 
 func (w *DbPushWorker) applyDefaults() {
+	if w.Clock == nil {
+		w.Clock = realClock{}
+	}
 	if w.BatchSize <= 0 {
 		w.BatchSize = defaultBatchSize
 	}
@@ -85,16 +91,16 @@ func (w *DbPushWorker) Run(ctx context.Context) error {
 	batch := make([]Envelope, 0, w.BatchSize)
 
 	// 배치의 첫 메시지가 들어온 시점부터 FlushInterval 경과 시 flush
-	timer := time.NewTimer(w.FlushInterval)
+	timer := w.Clock.NewTimer(w.FlushInterval)
 	if !timer.Stop() {
-		<-timer.C
+		<-timer.C()
 	}
 
 	// flush는 배치 전체가 커밋(또는 격리 기록)된 뒤에만 ack한다. 실패하면 배치를 그대로 둔다.
 	flush := func(flushCtx context.Context) error {
 		if !timer.Stop() {
 			select {
-			case <-timer.C:
+			case <-timer.C():
 			default:
 			}
 		}
@@ -132,7 +138,7 @@ loop:
 					break loop
 				}
 			}
-		case <-timer.C:
+		case <-timer.C():
 			if err := flush(ctx); err != nil {
 				break loop
 			}
@@ -279,7 +285,7 @@ func (w *DbPushWorker) retry(ctx context.Context, classify bool, op func() error
 		slog.Warn("db error; retrying",
 			append([]any{"attempt", attempt, "backoff", backoff, "kind", string(kind), "error", err}, attrs...)...)
 		select {
-		case <-time.After(backoff):
+		case <-w.Clock.After(backoff):
 		case <-ctx.Done():
 			return ctx.Err()
 		}
