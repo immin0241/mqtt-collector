@@ -1,0 +1,100 @@
+{
+  "uid": "ingest-path",
+  "title": "수집 경로 (Ingest path)",
+  "tags": ["ingest", "prometheus"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "수신 합계 (messages_received_total)",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(messages_received_total)" }]
+    },
+    {
+      "id": 2, "type": "stat", "title": "적재 합계 (rows_committed_total)",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(rows_committed_total)" }]
+    },
+    {
+      "id": 3, "type": "stat", "title": "중복 제거 (dedup_total)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(dedup_total)" }]
+    },
+    {
+      "id": 4, "type": "stat", "title": "격리 (rows_rejected_total)",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(rows_rejected_total) or vector(0)" }]
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "수신 vs 적재 (건/초)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "legendFormat": "수신", "expr": "rate(messages_received_total[1m])" },
+        { "refId": "B", "legendFormat": "적재", "expr": "rate(rows_committed_total[1m])" },
+        { "refId": "C", "legendFormat": "중복 제거", "expr": "rate(dedup_total[1m])" },
+        { "refId": "D", "legendFormat": "격리 ({{reason}})", "expr": "rate(rows_rejected_total[1m])" }
+      ]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "채널 깊이 (상한 600)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "min": 0, "max": 600 }, "overrides": [] },
+      "targets": [{ "refId": "A", "legendFormat": "channel_depth", "expr": "channel_depth" }]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "수신~커밋 지연 (ingest_lag_seconds)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "legendFormat": "p50", "expr": "histogram_quantile(0.5, sum(rate(ingest_lag_seconds_bucket[1m])) by (le))" },
+        { "refId": "B", "legendFormat": "p99", "expr": "histogram_quantile(0.99, sum(rate(ingest_lag_seconds_bucket[1m])) by (le))" }
+      ]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "배치 저장 시간 (batch_flush_seconds)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "legendFormat": "p50", "expr": "histogram_quantile(0.5, sum(rate(batch_flush_seconds_bucket[1m])) by (le))" },
+        { "refId": "B", "legendFormat": "p99", "expr": "histogram_quantile(0.99, sum(rate(batch_flush_seconds_bucket[1m])) by (le))" }
+      ]
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "배치 크기 평균 (batch_size)",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "legendFormat": "평균 건수/배치", "expr": "rate(batch_size_sum[1m]) / rate(batch_size_count[1m])" }
+      ]
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "DB 오류 (db_errors_total, 건/초)",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "legendFormat": "{{kind}}", "expr": "rate(db_errors_total[1m])" }
+      ]
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "마지막 flush 이후 경과 (초)",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "legendFormat": "time() - last_flush_timestamp", "expr": "time() - last_flush_timestamp" }
+      ]
+    }
+  ]
+}

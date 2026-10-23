@@ -1,0 +1,10 @@
+apiVersion: 1
+
+# 수집 경로 지표(전 테넌트 합산, sensor_id 라벨 없음). 기본 org(1)에만 등록된다.
+datasources:
+  - name: prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: false
