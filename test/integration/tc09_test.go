@@ -344,3 +344,81 @@ func TestMigration000008BackfillOnCompressedChunks(t *testing.T) {
 		t.Fatalf("rows after round trip = %d, want %d", after, total+2)
 	}
 }
+
+// provision_tenant.sh 는 중간에 실패하면 role 을 반쯤 만든 채 남기지 않는다. (존재하지 않는 tenant -> 매핑 FK 위반)
+func TestProvisionTenantIsAtomic(t *testing.T) {
+	testenv.RequireDocker(t)
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker CLI not found")
+	}
+	pg := testenv.StartPostgres(t)
+	cmd := exec.Command("bash", filepath.Join(testenv.RepoRoot(), "scripts/provision_tenant.sh"), "999")
+	cmd.Env = append(os.Environ(), "PSQL=docker exec -i "+pg.Container.GetContainerID()+" psql -U go -d go -v ON_ERROR_STOP=1")
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("expected failure for a nonexistent tenant, got success:\n%s", out)
+	}
+	conn := pg.Conn(t)
+	defer conn.Close(context.Background())
+	var exists bool
+	if err := conn.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'grafana_tenant_999')`).Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatal("role grafana_tenant_999 was left behind after a failed provisioning")
+	}
+}
+
+// migration 000009: 1시간보다 늦게 도착한 행도 1분 집계에 반영된다. (이전 정책에서는 반영되지 않는다)
+func TestLateDataReachesAggregate(t *testing.T) {
+	testenv.RequireDocker(t)
+	pg := testenv.StartPostgres(t)
+	pg.SeedSensors(t, 1)
+	ctx := context.Background()
+	conn := pg.Conn(t)
+	defer conn.Close(ctx)
+
+	runRefreshJob := func() {
+		t.Helper()
+		var jobID int
+		if err := conn.QueryRow(ctx, `SELECT job_id FROM timescaledb_information.jobs WHERE proc_name = 'policy_refresh_continuous_aggregate' AND hypertable_name = 'sensor_data_1m'`).Scan(&jobID); err != nil {
+			t.Fatalf("find refresh job: %v", err)
+		}
+		if _, err := conn.Exec(ctx, fmt.Sprintf(`CALL run_job(%d)`, jobID)); err != nil {
+			t.Fatalf("run_job: %v", err)
+		}
+	}
+	// 하루 이상 지난 버킷이 집계에 있는 개수 (늦게 도착한 행만이 만들 수 있다)
+	oldBuckets := func() int {
+		var n int
+		_ = conn.QueryRow(ctx, `SELECT count(*) FROM sensor_data_1m WHERE sensor_id = 1 AND bucket < now() - interval '1 day'`).Scan(&n)
+		return n
+	}
+	insertLate := func(seq int) {
+		if _, err := conn.Exec(ctx, `INSERT INTO sensor_data (time, sensor_id, seq, crack_width, received_at) VALUES (now() - interval '2 days', 1, $1, 1.0, now())`, seq); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	down, _ := readFile("migrations/000009_cagg_late_data.down.sql")
+	up, _ := readFile("migrations/000009_cagg_late_data.up.sql")
+
+	// 이전 정책(1시간): 이틀 전 행은 집계에 반영되지 않는다.
+	if _, err := conn.Exec(ctx, down); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	insertLate(1001)
+	runRefreshJob()
+	if n := oldBuckets(); n != 0 {
+		t.Fatalf("old policy: late row reached the aggregate (%d buckets); the test no longer demonstrates the problem", n)
+	}
+
+	// 새 정책(3일): 반영된다.
+	if _, err := conn.Exec(ctx, up); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	insertLate(1002)
+	runRefreshJob()
+	if n := oldBuckets(); n < 1 {
+		t.Fatalf("new policy: late row did not reach the aggregate (old buckets = %d)", n)
+	}
+}

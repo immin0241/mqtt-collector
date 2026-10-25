@@ -80,6 +80,7 @@ services:
       PGPASSWORD: go
       PGDATABASE: go
       APP_WORKER_PASSWORD: ${APP_WORKER_PASSWORD:-worker}
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-grafana}
     volumes:
       - ./seeds:/seeds:ro
     entrypoint: ["/bin/sh", "-c"]
@@ -88,7 +89,7 @@ services:
         set -e
         for f in /seeds/*.sql; do
           echo "applying $$f"
-          psql -v ON_ERROR_STOP=1 -v worker_password="$$APP_WORKER_PASSWORD" -f "$$f"
+          psql -v ON_ERROR_STOP=1 -v worker_password="$$APP_WORKER_PASSWORD" -v grafana_password="$$GRAFANA_DB_PASSWORD" -f "$$f"
         done
     depends_on:
       migrate:
@@ -211,8 +212,9 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
-      # 개발용 org(1) <-> dev tenant(2) 데이터소스 계정. scripts/provision_tenant.sh 2 로 생성
-      GRAFANA_DB_USER: grafana_tenant_2
+      # 개발용 org(1) <-> dev tenant 데이터소스 계정. seeds/dev_grafana_role.sql 이 만든다.
+      # 다른 tenant 는 scripts/provision_tenant.sh <tenant_id> 로 role 을 만든다. role -> tenant 는 tenant_role 이 정한다.
+      GRAFANA_DB_USER: ${GRAFANA_DB_USER:-grafana_dev}
       GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-grafana}
       # Logto(OIDC) 로그인. ID 토큰/userinfo의 organizations claim -> Grafana org 매핑.
       #   GRAFANA_OAUTH_ORG_MAPPING = "<Logto organization id>:<Grafana org id>:<role>" (여러 개는 공백으로 구분)

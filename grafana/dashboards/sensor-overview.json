@@ -15,12 +15,21 @@
   "templating": {
     "list": [
       {
+        "name": "ds",
+        "type": "datasource",
+        "query": "grafana-postgresql-datasource",
+        "label": "DB",
+        "hide": 2,
+        "refresh": 1,
+        "current": {}
+      },
+      {
         "name": "sensor",
         "label": "Sensor",
         "type": "query",
         "datasource": {
           "type": "grafana-postgresql-datasource",
-          "uid": "sensors"
+          "uid": "${ds}"
         },
         "query": "SELECT id AS __value, id || ' (' || sensor_type || ')' AS __text FROM v_sensor ORDER BY id",
         "refresh": 2,
@@ -45,7 +54,7 @@
       "title": "Online sensors",
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "sensors"
+        "uid": "${ds}"
       },
       "gridPos": {
         "x": 0,
@@ -58,7 +67,7 @@
           "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "sensors"
+            "uid": "${ds}"
           },
           "editorMode": "code",
           "format": "table",
@@ -99,7 +108,7 @@
       "title": "Sensor status (now)",
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "sensors"
+        "uid": "${ds}"
       },
       "gridPos": {
         "x": 4,
@@ -112,7 +121,7 @@
           "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "sensors"
+            "uid": "${ds}"
           },
           "editorMode": "code",
           "format": "table",
@@ -172,7 +181,7 @@
       "description": "sensor_event 전이 기반. 값이 바뀐 시점부터 다음 전이까지 상태가 유지된다.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "sensors"
+        "uid": "${ds}"
       },
       "gridPos": {
         "x": 0,
@@ -185,7 +194,7 @@
           "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "sensors"
+            "uid": "${ds}"
           },
           "editorMode": "code",
           "format": "time_series",
@@ -233,7 +242,7 @@
       "description": "선택 구간에서 online 으로 기록된 시간 비율. 구간 시작 이전의 마지막 전이 상태를 반영한다.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "sensors"
+        "uid": "${ds}"
       },
       "gridPos": {
         "x": 16,
@@ -246,7 +255,7 @@
           "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "sensors"
+            "uid": "${ds}"
           },
           "editorMode": "code",
           "format": "table",
@@ -297,7 +306,7 @@
       "title": "Connection events",
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "sensors"
+        "uid": "${ds}"
       },
       "gridPos": {
         "x": 0,
@@ -310,7 +319,7 @@
           "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "sensors"
+            "uid": "${ds}"
           },
           "editorMode": "code",
           "format": "table",
@@ -332,7 +341,7 @@
       "description": "기울기 tilt_x / tilt_y. 1시간 초과 구간은 1분 집계, 이하는 원본을 $__interval 로 평균.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "sensors"
+        "uid": "${ds}"
       },
       "gridPos": {
         "x": 0,
@@ -345,7 +354,7 @@
           "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "sensors"
+            "uid": "${ds}"
           },
           "editorMode": "code",
           "format": "time_series",
@@ -381,7 +390,7 @@
       "description": "균열 폭.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "sensors"
+        "uid": "${ds}"
       },
       "gridPos": {
         "x": 12,
@@ -394,7 +403,7 @@
           "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "sensors"
+            "uid": "${ds}"
           },
           "editorMode": "code",
           "format": "time_series",
@@ -430,7 +439,7 @@
       "description": "온도.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "sensors"
+        "uid": "${ds}"
       },
       "gridPos": {
         "x": 0,
@@ -443,7 +452,7 @@
           "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "sensors"
+            "uid": "${ds}"
           },
           "editorMode": "code",
           "format": "time_series",
@@ -479,7 +488,7 @@
       "description": "1분 버킷의 수신 건수 / 기대 건수(60000 / expected_interval_ms). 진행 중인 현재 분은 제외.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
-        "uid": "sensors"
+        "uid": "${ds}"
       },
       "gridPos": {
         "x": 12,
@@ -492,7 +501,7 @@
           "refId": "A",
           "datasource": {
             "type": "grafana-postgresql-datasource",
-            "uid": "sensors"
+            "uid": "${ds}"
           },
           "editorMode": "code",
           "format": "time_series",
