@@ -32,7 +32,7 @@ ON CONFLICT (role_name) DO UPDATE SET tenant_id = EXCLUDED.tenant_id;
 ALTER ROLE ${ROLE} RESET app.tenant_id;
 
 -- 뷰만 조회 가능. 기본 테이블 권한은 주지 않는다.
-GRANT SELECT ON v_sensor, v_sensor_status, v_sensor_event, v_sensor_data, v_sensor_data_1m TO ${ROLE};
+GRANT SELECT ON v_sensor, v_sensor_status, v_sensor_event, v_sensor_data, v_sensor_data_1m, v_alert_rule, v_alert_event TO ${ROLE};
 COMMIT;
 SQL
 echo "${ROLE} role ready"

@@ -2,11 +2,13 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -155,6 +157,23 @@ func TestTC09_TenantIsolationAtDB(t *testing.T) {
 				if isB(id) {
 					t.Errorf("%s leaked tenant B sensor %d", q, id)
 				}
+			}
+		}
+	})
+
+	t.Run("alert views are tenant scoped", func(t *testing.T) {
+		a := f.asRole(t, roleA)
+		for _, q := range []string{`SELECT count(*) FROM v_alert_event`, `SELECT count(*) FROM v_alert_rule`} {
+			ids, err := intList(a, q)
+			if err != nil || len(ids) != 1 || ids[0] != 0 {
+				t.Errorf("tenant A %s = %v err=%v, want 0 (the only alert belongs to tenant B)", q, ids, err)
+			}
+		}
+		b := f.asRole(t, "grafana_tenant_"+fmt.Sprint(f.tenantB))
+		for _, q := range []string{`SELECT count(*) FROM v_alert_event`, `SELECT count(*) FROM v_alert_rule`} {
+			ids, err := intList(b, q)
+			if err != nil || len(ids) != 1 || ids[0] != 1 {
+				t.Errorf("tenant B %s = %v err=%v, want 1", q, ids, err)
 			}
 		}
 	})
@@ -421,4 +440,79 @@ func TestLateDataReachesAggregate(t *testing.T) {
 	if n := oldBuckets(); n < 1 {
 		t.Fatalf("new policy: late row did not reach the aggregate (old buckets = %d)", n)
 	}
+}
+
+// 대시보드의 모든 패널 쿼리가 tenant 조회 role 로 실행된다 (구문·권한 오류가 없고, 다른 테넌트 센서가 섞이지 않는다).
+// Grafana 매크로는 최근 1일 범위로 치환한다. 브라우저 렌더링은 검증하지 않는다.
+func TestDashboardQueriesRunAsTenant(t *testing.T) {
+	f := newTenantFixture(t)
+	roleA := provisionRole(t, f.pg, f.tenantA)
+	raw, err := readFile("grafana/dashboards/sensor-overview.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dash struct {
+		Panels []struct {
+			Title   string `json:"title"`
+			Targets []struct {
+				RawSQL string `json:"rawSql"`
+			} `json:"targets"`
+		} `json:"panels"`
+	}
+	if err := json.Unmarshal([]byte(raw), &dash); err != nil {
+		t.Fatal(err)
+	}
+
+	subs := []struct {
+		re   *regexp.Regexp
+		repl string
+	}{
+		{regexp.MustCompile(`\$__timeFilter\(([^)]+)\)`), `$1 > now() - interval '1 day'`},
+		{regexp.MustCompile(`\$__timeGroup\(([^,]+),\s*'1m'\)`), `time_bucket('1 minute', $1)`},
+		{regexp.MustCompile(`\$__timeGroup\(([^,]+),\s*\$__interval\)`), `time_bucket('1 minute', $1)`},
+		{regexp.MustCompile(`\$__timeFrom\(\)`), `(now() - interval '1 day')`},
+		{regexp.MustCompile(`\$__timeTo\(\)`), `now()`},
+		{regexp.MustCompile(`\$__from`), `extract(epoch from now() - interval '1 day')::bigint * 1000`},
+		{regexp.MustCompile(`\$__to`), `extract(epoch from now())::bigint * 1000`},
+		{regexp.MustCompile(`\$sensor`), `1, 2, 3, 4`}, // 다른 테넌트 센서(3, 4)를 일부러 넣어 뷰가 걸러내는지 본다
+	}
+
+	conn := f.asRole(t, roleA)
+	ran := 0
+	for _, p := range dash.Panels {
+		for _, tg := range p.Targets {
+			q := tg.RawSQL
+			if q == "" {
+				continue
+			}
+			for _, s := range subs {
+				q = s.re.ReplaceAllString(q, s.repl)
+			}
+			rows, err := conn.Query(context.Background(), q)
+			if err != nil {
+				t.Errorf("panel %q: %v\n%s", p.Title, err, q)
+				continue
+			}
+			for rows.Next() {
+				vals, _ := rows.Values()
+				for i, fd := range rows.FieldDescriptions() {
+					// 센서 id 열이 있다면 tenant A(1, 2)의 것이어야 한다
+					if name := fd.Name; name == "sensor_id" || name == "sensor" || name == "센서" {
+						if id, ok := vals[i].(int32); ok && (id == 3 || id == 4) {
+							t.Errorf("panel %q leaked tenant B sensor %d", p.Title, id)
+						}
+					}
+				}
+			}
+			rows.Close()
+			if err := rows.Err(); err != nil {
+				t.Errorf("panel %q: %v", p.Title, err)
+			}
+			ran++
+		}
+	}
+	if ran < 10 {
+		t.Fatalf("only %d dashboard queries ran; expected all panels", ran)
+	}
+	t.Logf("ran %d dashboard queries as %s", ran, roleA)
 }

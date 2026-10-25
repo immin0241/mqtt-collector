@@ -19,4 +19,4 @@ INSERT INTO tenant_role (role_name, tenant_id)
 SELECT 'grafana_dev', t.id FROM tenant t WHERE t.idp_org_id = 'dev-org'
 ON CONFLICT (role_name) DO UPDATE SET tenant_id = EXCLUDED.tenant_id;
 
-GRANT SELECT ON v_sensor, v_sensor_status, v_sensor_event, v_sensor_data, v_sensor_data_1m TO grafana_dev;
+GRANT SELECT ON v_sensor, v_sensor_status, v_sensor_event, v_sensor_data, v_sensor_data_1m, v_alert_rule, v_alert_event TO grafana_dev;
