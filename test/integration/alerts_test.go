@@ -29,6 +29,29 @@ func readFile(rel string) (string, error) {
 	return string(b), err
 }
 
+// withoutAlertViews 는 migration 000010(경보 뷰)을 내리고, 반환된 함수로 다시 올린다.
+// 이전 migration 의 down/up 왕복 테스트가 뷰 의존성에 막히지 않게 한다.
+func withoutAlertViews(t *testing.T, conn *pgx.Conn) func() {
+	t.Helper()
+	ctx := context.Background()
+	down, err := readFile("migrations/000010_alert_views.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, err := readFile("migrations/000010_alert_views.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, down); err != nil {
+		t.Fatalf("000010 down: %v", err)
+	}
+	return func() {
+		if _, err := conn.Exec(ctx, up); err != nil {
+			t.Errorf("000010 up: %v", err)
+		}
+	}
+}
+
 func fastHealth(cfg *app.Config) {
 	cfg.HealthMinTimeout = 500 * time.Millisecond
 	cfg.HealthTick = 200 * time.Millisecond
@@ -139,6 +162,10 @@ func TestMigration000007UpDownRoundTrip(t *testing.T) {
 	if _, err := conn.Exec(ctx, `INSERT INTO sensor_event (time, sensor_id, event_type, source, message) VALUES (now(), 1, 'fault', 'data', 'x')`); err != nil {
 		t.Fatalf("fault event should be allowed after 000007: %v", err)
 	}
+
+	// 000010 의 경보 뷰가 alert_event 에 의존하므로 먼저 내렸다가 끝나면 다시 올린다.
+	dropViews := withoutAlertViews(t, conn)
+	defer dropViews()
 
 	down, err := readFile("migrations/000007_alerts_and_faulty.down.sql")
 	if err != nil {

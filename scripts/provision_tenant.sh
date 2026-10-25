@@ -13,6 +13,8 @@ PASSWORD=${GRAFANA_DB_PASSWORD:-grafana}
 ROLE="grafana_tenant_${TENANT_ID}"
 
 $PSQL <<SQL
+-- 하나라도 실패하면 role 이 반쯤 만들어진 채 남지 않도록 전체를 한 트랜잭션으로 실행한다.
+BEGIN;
 DO \$\$
 BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${ROLE}') THEN
@@ -23,11 +25,15 @@ BEGIN
 END
 \$\$;
 
--- 이 role의 모든 세션에서 tenant가 고정된다 (뷰가 app.tenant_id로 필터)
-ALTER ROLE ${ROLE} SET app.tenant_id = '${TENANT_ID}';
+-- role -> tenant 매핑 (ADR-0009). 뷰는 session_user 로 이 매핑을 조회하므로 role 이 세션에서 바꿀 수 없다.
+INSERT INTO tenant_role (role_name, tenant_id) VALUES ('${ROLE}', ${TENANT_ID})
+ON CONFLICT (role_name) DO UPDATE SET tenant_id = EXCLUDED.tenant_id;
+-- 예전 방식(ALTER ROLE ... SET app.tenant_id)으로 만든 role 에 남은 설정 제거
+ALTER ROLE ${ROLE} RESET app.tenant_id;
 
 -- 뷰만 조회 가능. 기본 테이블 권한은 주지 않는다.
-GRANT SELECT ON v_sensor, v_sensor_status, v_sensor_event, v_sensor_data, v_sensor_data_1m TO ${ROLE};
+GRANT SELECT ON v_sensor, v_sensor_status, v_sensor_event, v_sensor_data, v_sensor_data_1m, v_alert_rule, v_alert_event TO ${ROLE};
+COMMIT;
 SQL
 echo "${ROLE} role ready"
 

@@ -67,7 +67,7 @@ go test -race ./...                 # 단위 + 통합(testcontainers: TimescaleD
 go test -tags e2e ./test/e2e -v     # 장애 주입: TC-02(DB 차단), 03(브로커 중지), 04(SIGKILL), 06(부하+DB 지연)
 ```
 
-통합 테스트는 TC-01·05·07·08·12·13·16과 재시작 시 센서 상태, e2e는 TC-02·03·04·06을 코드로 재현하며 판정은 `tools/reconcile`과 같은 `internal/reconcile`을 쓴다.
+통합 테스트는 TC-01·05·07·08·09(DB 계층)·12·13·16과 재시작 시 센서 상태, e2e는 TC-02·03·04·06을 코드로 재현하며 판정은 `tools/reconcile`과 같은 `internal/reconcile`을 쓴다.
 구성, 측정 조건·결과, Toxiproxy 대신 프로세스 내 프록시를 쓴 이유는 [docs/notes/phase3-test-infra.md](docs/notes/phase3-test-infra.md)에 있다.
 CI는 푸시마다 vet과 위 첫 번째 명령을 실행하고, e2e는 GitHub Actions에서 수동으로 실행한다.
 
@@ -93,6 +93,9 @@ CI는 푸시마다 vet과 위 첫 번째 명령을 실행하고, e2e는 GitHub A
 | [0006](docs/adr/0006-sensor-data-tenant-id-removal.md) | `sensor_data.tenant_id` 제거 이력 |
 | [0007](docs/adr/0007-shutdown-keeps-subscription.md) | 정상 종료 시 구독을 해제하지 않는다 (TC-16) |
 | [0008](docs/adr/0008-sensor-state-and-alerts.md) | 센서 상태(online/offline/faulty)와 경보를 수신 시점 메모리에서 평가, edge trigger |
+| [0009](docs/adr/0009-tenant-isolation.md) | 테넌트 격리: role→테넌트 매핑 뷰(세션 설정 우회 차단), `sensor_data.tenant_id` 재도입 (0006 대체) |
+| [0010](docs/adr/0010-alert-api.md) | 경보 규칙·상태 변경 API: 별도 Go 서비스, 조직 토큰(JWKS) 인증, scope로 관리자/운영자 분리, 최소 권한 API 전용 DB role |
+| [0011](docs/adr/0011-tenant-surge-isolation.md) | 테넌트 폭주 격리: 테넌트별 구독 세션·큐 분리로 결정 (구현 미착수, TC-17 미달) |
 
 ## 측정 결과
 
@@ -113,6 +116,8 @@ CI는 푸시마다 vet과 위 첫 번째 명령을 실행하고, e2e는 GitHub A
 | TC-08 경보 정확성·지연 | 임계치 경보 정확, 지연 p99 2초 | 통합 테스트: 위반 지속·재전달 3회에도 경보는 위반 진입 시점 2건뿐, `created_at − triggered_at` 최대 0.003초(경보 2건, 같은 호스트 시계). **p99를 낼 표본이 아니다. 부하 상태의 지연은 미측정** | 부분 통과 |
 | TC-12 통신 두절 | 조용한 센서만 offline, 복구 시 online | 통합 테스트: 센서 4개 중 1개 침묵 → 그 센서만 offline(timeout 이벤트 1건), 재수신 시 recovered. 4개 전부 조용하면 센서별 전이 없이 `stalled` 한 건 | 통과 |
 | TC-13 상태 전이 | flatline·범위 밖 → faulty, 해소 시 복구 | 통합 테스트: flatline 12회 → faulty → 값 변화 → online. 이력 connected→fault→fault_cleared. 범위 밖 반복·경보 상태 전이 동시성(20 경쟁에서 1건 성공)은 단위·통합 테스트 | 통과 |
+| TC-09 테넌트 격리 (DB 계층) | 모든 경로에서 타 테넌트 데이터 0건 | 통합 테스트(`scripts/provision_tenant.sh`로 만든 role): 뷰·기본 테이블·경보 테이블·쓰기·chunk 직접 조회·`SET`/`set_config`/`SET ROLE` 우회 모두 0건. **시험 중 세션 설정 우회 구멍을 발견해 수정(ADR-0009).** 경보 뷰와 대시보드 쿼리 13개도 tenant role로 검증. API 경로는 통합 테스트(타 조직 규칙·경보 404, 타 조직 센서 규칙 422). Grafana 로그인 경로(Logto)와 실제 Logto 토큰은 미시험 | 부분 통과 |
+| TC-17 테넌트 폭주 | 다른 테넌트에 영향 없음 | 폭주 20,000건은 평온한 테넌트 p95 0.46 s, 유실 0. **폭주 150,000건에서 브로커 큐 상한(60,000) 초과로 보이는 유실 2.6%, 평온한 테넌트도 유실될 수 있음.** 조건·해석은 [phase6-tc17](docs/experiments/phase6-tc17.md). 결정: 테넌트별 구독 분리([ADR-0011](docs/adr/0011-tenant-surge-isolation.md)), 구현 미착수 | 미달 |
 | TC-16 정상 종료(SIGTERM) | 종료 후 재시작해도 누락·중복 0 | 통합 테스트: 센서당 700건 모두 저장. 이 테스트가 종료 시 Unsubscribe 유실과 paho 라우트 미등록 유실을 발견해 수정 | 통과 |
 
 수집 지연: Phase 2 환경에서 `ingest_lag_seconds` p99가 약 2.9초였다(약 3 msg/s, flush 주기 2초 영향).
@@ -132,6 +137,7 @@ CI는 푸시마다 vet과 위 첫 번째 명령을 실행하고, e2e는 GitHub A
 | 경로 | 내용 |
 | --- | --- |
 | `main.go`, `workers/` | 수집 워커 (수신, 배치 저장, 센서 상태) |
+| `cmd/api/`, `internal/api/` | 경보 규칙·상태 변경 API (Swagger UI `:8080/docs`, ADR-0010) |
 | `migrations/`, `seeds/` | 스키마(up/down 쌍)와 개발 시드 |
 | `tools/reconcile/` | 발행 로그 ↔ DB 대조 도구 |
 | `mqtt_emulator/` | Python 센서 에뮬레이터 ([README](mqtt_emulator/README.md)) |

@@ -15,6 +15,7 @@ COPY . .
 
 # 정적 바이너리로 컴파일 (CGO를 비활성화하여 에러 방지)
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o main .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o api ./cmd/api
 
 # ==========================================
 # 2단계: 실행 환경 (Run Stage)
@@ -28,6 +29,7 @@ WORKDIR /root/
 
 # 빌드 단계에서 생성된 정적 바이너리 파일만 복사
 COPY --from=builder /app/main .
+COPY --from=builder /app/api .
 
 # 컨테이너 시작 시 실행될 명령어
 CMD ["./main"]
