@@ -284,3 +284,158 @@ class ControlTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InjectTest(unittest.TestCase):
+    """런타임 오류 주입 (shared 모드)."""
+
+    def reading(self, seq=0, crack=1.2):
+        return {"sensor_id": 7, "seq": seq, "time": "2026-01-01T00:00:00+00:00", "crack_width": crack}
+
+    def test_no_injection_sends_the_original_once(self):
+        from inject import Injector
+
+        sends, truth = Injector().apply(7, self.reading())
+        self.assertEqual(len(sends), 1)
+        self.assertTrue(sends[0].loggable)
+        self.assertEqual(truth, [])
+
+    def test_out_of_range_applies_n_times_then_stops(self):
+        from inject import Injector
+
+        inj = Injector()
+        inj.add(7, "out_of_range", 2)
+        values = []
+        for seq in range(3):
+            sends, truth = inj.apply(7, self.reading(seq))
+            values.append(json.loads(sends[0].payload)["crack_width"])
+        self.assertEqual(values, [99.0, 99.0, 1.2])
+        self.assertEqual(inj.snapshot(7), {})
+
+    def test_flatline_repeats_the_first_value_and_keeps_seq_moving(self):
+        from inject import Injector
+
+        inj = Injector()
+        inj.add(7, "flatline", 3)
+        got = [json.loads(inj.apply(7, self.reading(i, crack=1.0 + i))[0][0].payload) for i in range(4)]
+        self.assertEqual([g["crack_width"] for g in got], [1.0, 1.0, 1.0, 4.0])
+        self.assertEqual([g["seq"] for g in got], [0, 1, 2, 3])
+
+    def test_malformed_is_invalid_json_and_not_loggable(self):
+        from inject import Injector
+
+        inj = Injector()
+        inj.add(7, "malformed", 1)
+        sends, truth = inj.apply(7, self.reading())
+        self.assertFalse(sends[0].loggable)
+        with self.assertRaises(json.JSONDecodeError):
+            json.loads(sends[0].payload)
+        self.assertEqual(truth[0]["kind"], "malformed")
+
+    def test_duplicate_sends_identical_payload_three_times_all_logged(self):
+        from inject import Injector
+
+        inj = Injector()
+        inj.add(7, "duplicate", 1)
+        sends, truth = inj.apply(7, self.reading())
+        self.assertEqual(len(sends), 3)
+        self.assertEqual(len({s.payload for s in sends}), 1)
+        self.assertTrue(all(s.loggable for s in sends))
+        self.assertEqual(truth[0]["extra_copies"], 2)
+
+    def test_invalid_kind_and_count_are_rejected(self):
+        from inject import Injector
+
+        inj = Injector()
+        with self.assertRaises(ValueError):
+            inj.add(7, "nope", 1)
+        with self.assertRaises(ValueError):
+            inj.add(7, "flatline", 0)
+
+    def test_injection_is_per_sensor(self):
+        from inject import Injector
+
+        inj = Injector()
+        inj.add(7, "out_of_range", 1)
+        sends, _ = inj.apply(8, {**self.reading(), "sensor_id": 8})
+        self.assertEqual(json.loads(sends[0].payload)["crack_width"], 1.2)
+
+
+class ControlApiTest(unittest.TestCase):
+    """제어 API: 주입 엔드포인트, 모델 초기화, 토큰 인증."""
+
+    def setUp(self):
+        import main
+
+        self.main = main
+        main.config = main.PublisherConfig(sensors=[{"id": 1, "sensor_type": "crack", "label": "A"}])
+        main.model_overrides.clear()
+        main.silenced.clear()
+        main.injector.pending.clear()
+        self._token = main.CONTROL_TOKEN
+
+    def tearDown(self):
+        self.main.CONTROL_TOKEN = self._token
+
+    def test_inject_queues_and_state_reports_it(self):
+        m = self.main
+        asyncio.run(m.inject_fault(1, "flatline", 15))
+        state = asyncio.run(m.control_state())
+        self.assertEqual(state[0]["pending"], {"flatline": 15})
+        self.assertEqual(state[0]["label"], "A")
+        asyncio.run(m.clear_injection(1))
+        self.assertEqual(asyncio.run(m.control_state())[0]["pending"], {})
+
+    def test_inject_rejects_bad_input_and_unknown_sensor(self):
+        from fastapi import HTTPException
+
+        m = self.main
+        for args in [(1, "nope", 1), (1, "flatline", 0), (99, "flatline", 1)]:
+            with self.assertRaises(HTTPException) as ctx:
+                asyncio.run(m.inject_fault(*args))
+            self.assertIn(ctx.exception.status_code, (404, 422))
+
+    def test_reset_model_restores_defaults(self):
+        m = self.main
+        base = m.model_params(1).crack_base
+        asyncio.run(m.set_sensor_model(1, {"crack_base": 50.0}))
+        self.assertTrue(asyncio.run(m.control_state())[0]["model_overridden"])
+        asyncio.run(m.reset_sensor_model(1))
+        self.assertEqual(m.model_params(1).crack_base, base)
+
+    def test_token_is_required_when_configured(self):
+        from fastapi import HTTPException
+
+        m = self.main
+
+        class Req:
+            def __init__(self, path, token=None):
+                self.url = type("U", (), {"path": path})()
+                self.headers = {"x-control-token": token} if token is not None else {}
+
+        m.CONTROL_TOKEN = None
+        asyncio.run(m.require_token(Req("/config")))  # 토큰 미설정이면 열려 있다 (로컬 개발)
+
+        m.CONTROL_TOKEN = "s3cret"
+        for bad in (Req("/config"), Req("/config", "wrong"), Req("/sensors/1/pause", "")):
+            with self.assertRaises(HTTPException) as ctx:
+                asyncio.run(m.require_token(bad))
+            self.assertEqual(ctx.exception.status_code, 401)
+        asyncio.run(m.require_token(Req("/config", "s3cret")))
+        asyncio.run(m.require_token(Req("/control")))  # 화면과 헬스체크는 공개
+        asyncio.run(m.require_token(Req("/healthz")))
+
+    def test_truth_log_records_applied_injections(self):
+        m = self.main
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "truth.jsonl")
+            old = m.truth_log
+            m.truth_log = open(path, "a", buffering=1, encoding="utf-8")
+            try:
+                m.write_truth({"kind": "flatline", "sensor_id": 1, "seq": 5})
+            finally:
+                m.truth_log.close()
+                m.truth_log = old
+            rec = json.loads(read_lines(path)[0])
+            self.assertEqual((rec["kind"], rec["sensor_id"], rec["seq"]), ("flatline", 1, 5))
+            self.assertIn("at", rec)

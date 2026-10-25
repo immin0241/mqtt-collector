@@ -1,0 +1,18 @@
+{
+  "mode": "shared",
+  "interval_seconds": 1.0,
+  "jitter_fraction": 0.1,
+  "topic_prefix": "sensors",
+  "qos": 1,
+  "sensors": [
+    {"id": 101, "sensor_type": "tilt",  "label": "테넌트 A (dev)"},
+    {"id": 102, "sensor_type": "crack", "label": "테넌트 A (dev)"},
+    {"id": 103, "sensor_type": "env",   "label": "테넌트 A (dev)"},
+    {"id": 111, "sensor_type": "tilt",  "label": "테넌트 B (demo-b)"},
+    {"id": 112, "sensor_type": "crack", "label": "테넌트 B (demo-b)"},
+    {"id": 113, "sensor_type": "env",   "label": "테넌트 B (demo-b)"},
+    {"id": 121, "sensor_type": "tilt",  "label": "테넌트 C (demo-c)"},
+    {"id": 122, "sensor_type": "crack", "label": "테넌트 C (demo-c)"},
+    {"id": 123, "sensor_type": "env",   "label": "테넌트 C (demo-c)"}
+  ]
+}
