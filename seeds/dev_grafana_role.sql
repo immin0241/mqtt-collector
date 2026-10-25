@@ -6,7 +6,7 @@
 -- ON CONFLICT DO NOTHING 은 identity 시퀀스를 소비하므로 존재하지 않을 때만 넣는다.
 INSERT INTO tenant (idp_org_id, name)
 SELECT 'dev-org', 'dev'
-WHERE NOT EXISTS (SELECT FROM tenant WHERE idp_org_id = 'dev-org');
+WHERE NOT EXISTS (SELECT FROM tenant WHERE name = 'dev');
 
 SELECT format('CREATE ROLE grafana_dev LOGIN PASSWORD %L', :'grafana_password')
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'grafana_dev')
@@ -16,7 +16,7 @@ SELECT format('ALTER ROLE grafana_dev PASSWORD %L', :'grafana_password')
 \gexec
 
 INSERT INTO tenant_role (role_name, tenant_id)
-SELECT 'grafana_dev', t.id FROM tenant t WHERE t.idp_org_id = 'dev-org'
+SELECT 'grafana_dev', t.id FROM tenant t WHERE t.name = 'dev'
 ON CONFLICT (role_name) DO UPDATE SET tenant_id = EXCLUDED.tenant_id;
 
 GRANT SELECT ON v_sensor, v_sensor_status, v_sensor_event, v_sensor_data, v_sensor_data_1m, v_alert_rule, v_alert_event TO grafana_dev;

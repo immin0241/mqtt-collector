@@ -2,12 +2,12 @@
 -- ON CONFLICT DO NOTHING 은 충돌해도 identity 시퀀스를 소비해 tenant id 가 건너뛴다. 존재하지 않을 때만 넣는다.
 INSERT INTO tenant (idp_org_id, name)
 SELECT 'dev-org', 'dev'
-WHERE NOT EXISTS (SELECT FROM tenant WHERE idp_org_id = 'dev-org');
+WHERE NOT EXISTS (SELECT FROM tenant WHERE name = 'dev');
 
 INSERT INTO sensor (id, tenant_id, facility_id, sensor_type, vendor)
 OVERRIDING SYSTEM VALUE
 SELECT 200 + g, t.id, 1, (ARRAY['tilt', 'crack', 'env'])[1 + (g % 3)], 'emulator'
 FROM tenant t,
      generate_series(1, 10) AS g
-WHERE t.idp_org_id = 'dev-org'
+WHERE t.name = 'dev'
 ON CONFLICT (id) DO NOTHING;
