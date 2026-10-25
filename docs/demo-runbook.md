@@ -52,17 +52,23 @@ cp .env.example .env
 
 | 변수 | 설명 |
 | --- | --- |
-| `PUBLIC_HOST` | EC2 의 공인 IP 또는 DNS. Elastic IP 를 붙이면 재시작해도 안 바뀐다 |
+| `COMPOSE_FILE` | `docker-compose.yml:docker-compose.demo.yml` (시연 오버레이를 항상 적용. compose 가 `.env` 에서 읽으므로 셸에 export 할 필요가 없다) |
+| `PUBLIC_HOST` | EC2 의 공인 IP 또는 DNS. **Elastic IP 를 먼저 붙인다.** Logto 설정 뒤에 주소가 바뀌면 Logto·Grafana·API 설정을 전부 다시 맞춰야 한다 |
 | `CONTROL_TOKEN` | 오류 주입 API 토큰. 없으면 에뮬레이터가 기동하지 않는다 |
 | `GRAFANA_ADMIN_USER`, `GRAFANA_ADMIN_PASSWORD` | 기본값 `admin/admin` 을 쓰지 말 것 |
-| `APP_WORKER_PASSWORD`, `GRAFANA_DB_PASSWORD`, `API_DB_PASSWORD` | DB role 비밀번호. `DATABASE_URL` 의 워커 비밀번호도 같게 |
-| `MQTT_PASSWORD` | 브로커 계정 (ACL 파일과 맞아야 한다) |
+| `APP_WORKER_PASSWORD`, `GRAFANA_DB_PASSWORD`, `API_DB_PASSWORD` | DB role 비밀번호. `.env.example` 에는 이 변수들이 주석으로 없을 수 있으니 직접 추가한다. **`DATABASE_URL` 안의 워커 비밀번호(`password=...`)도 같은 값으로 직접 고친다** |
 | `GRAFANA_OAUTH_CLIENT_ID`, `GRAFANA_OAUTH_CLIENT_SECRET` | Logto 앱에서 새로 발급 (이전에 노출된 시크릿은 폐기) |
 | `GRAFANA_OAUTH_ENABLED=true`, `GRAFANA_OAUTH_ORG_MAPPING` | 4단계에서 채운다 |
 
+**바꾸지 말 것:** `MQTT_USERNAME`/`MQTT_PASSWORD`(`viewer`/`viewer123`). 브로커 비밀번호 파일은 `init` 서비스가 이 값으로 매번 다시 만들기 때문에 `.env` 만 바꾸면 앱이 브로커에 접속하지 못한다. 1884 포트는 호스트 로컬에만 열려 있다.
+DB 슈퍼유저(`go`/`go`)도 `127.0.0.1` 에서만 접근된다.
+
+**`.env` 를 셸에서 `source` 하지 않는다.** 값에 `&` 등이 있어 셸이 잘못 해석한다. compose 는 `.env` 를 직접 읽는다. 셸에서 토큰이 필요한 명령에는 다음을 쓴다:
 ```bash
-export COMPOSE_FILE=docker-compose.yml:docker-compose.demo.yml   # ~/.bashrc 에도 넣어 두면 재접속 후에도 유지
-set -a; . ./.env; set +a       # PUBLIC_HOST, CONTROL_TOKEN 을 셸로 읽는다 (compose 가 치환에 쓴다)
+export CONTROL_TOKEN=$(grep -m1 '^CONTROL_TOKEN=' .env | cut -d= -f2-)
+```
+
+```bash
 docker compose up -d --build
 docker compose ps              # migrate, seed 는 Exited(0) 이 정상. 나머지는 Up
 ```
@@ -73,7 +79,7 @@ docker compose ps              # migrate, seed 는 Exited(0) 이 정상. 나머�
 ## 3. Grafana 멀티 테넌트 구성
 
 ```bash
-GRAFANA_ADMIN="$GRAFANA_ADMIN_USER:$GRAFANA_ADMIN_PASSWORD" scripts/demo_setup.sh
+scripts/demo_setup.sh        # Grafana 관리자 계정은 .env 의 GRAFANA_ADMIN_USER/PASSWORD 를 읽는다
 ```
 
 테넌트 demo-b, demo-c 마다 Grafana org 생성 → 전용 DB role(`grafana_tenant_<id>`) → 데이터소스 → 대시보드를 만든다. 멱등이다.
@@ -122,14 +128,14 @@ docker compose exec -T postgres psql -U go -d go -c "select sensor_id, count(*) 
 SINCE=<5단계에서 기록한 시각>
 docker compose pause emulator; sleep 6
 docker compose cp emulator:/data/publish.jsonl /tmp/publish.jsonl
-go run ./tools/reconcile --dsn "postgres://go:<DB 비밀번호>@localhost:5432/go?sslmode=disable" \
+go run ./tools/reconcile --dsn "postgres://go:go@localhost:5432/go?sslmode=disable" \
    --published /tmp/publish.jsonl --since "$SINCE"
 docker compose unpause emulator
 ```
 
 - 모든 센서가 `OK` 이고 `missing`, `unexpected`, `db_dup` 가 0이어야 한다. 깨진 JSON 주입분은 "격리 테이블" 줄에 따로 나온다.
 - 멈춘 동안 센서가 몇 초 침묵하므로 상태 이벤트(timeout/recovered)가 한두 건 생긴다. 시연 이력에 남는 것이 싫으면 T-4h 최종 대조에서만 한다.
-- Go 가 EC2 에 없으면 `docker run --rm -v $PWD:/src -w /src --network host golang:1.27 go run ./tools/reconcile ...` 를 쓴다.
+- Go 가 EC2 에 없으면 `docker run --rm -v $PWD:/src -w /src --network host golang:1.27 go run ./tools/reconcile ...` 를 쓴다 (첫 실행은 모듈을 받느라 오래 걸린다. 미리 한 번 돌려 둘 것).
 - 대시보드: `channel_depth` 는 0 근처, `ingest_lag_seconds` 는 안정적이어야 한다. 1분 집계 패널은 1~2분 늦게 채워진다.
 - 디스크: `df -h`, `docker system df`.
 

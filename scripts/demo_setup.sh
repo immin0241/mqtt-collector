@@ -4,14 +4,19 @@
 #   테넌트 dev 는 기본 org(1)이 쓴다. (compose 가 데이터소스와 대시보드를 provisioning 한다)
 #
 #   usage: scripts/demo_setup.sh
-#   환경 변수: GRAFANA_URL (기본 http://localhost:3000), GRAFANA_ADMIN (기본 admin:admin, user:password 형식),
+#   환경 변수: GRAFANA_URL (기본 http://localhost:3000), GRAFANA_ADMIN (user:password 형식, 기본은 .env 의 값),
 #              GRAFANA_DB_PASSWORD (기본 grafana)
 #   COMPOSE_FILE 에 오버레이가 들어 있어야 한다. (export COMPOSE_FILE=docker-compose.yml:docker-compose.demo.yml)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 GRAFANA_URL=${GRAFANA_URL:-http://localhost:3000}
-GRAFANA_ADMIN=${GRAFANA_ADMIN:-admin:admin}
+# 관리자 계정: 환경 변수 GRAFANA_ADMIN(user:password) > .env 의 GRAFANA_ADMIN_USER/PASSWORD > admin:admin
+env_get() { grep -m1 "^$1=" .env 2>/dev/null | cut -d= -f2- || true; }
+if [[ -z "${GRAFANA_ADMIN:-}" ]]; then
+    gf_user=$(env_get GRAFANA_ADMIN_USER); gf_pass=$(env_get GRAFANA_ADMIN_PASSWORD)
+    GRAFANA_ADMIN="${gf_user:-admin}:${gf_pass:-admin}"
+fi
 TENANTS=(demo-b demo-c)
 DASHBOARD=grafana/dashboards/sensor-overview.json
 
