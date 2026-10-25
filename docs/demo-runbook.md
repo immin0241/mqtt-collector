@@ -100,6 +100,9 @@ scripts/demo_setup.sh        # Grafana 관리자 계정은 .env 의 GRAFANA_ADMI
 5. `.env` 에 `GRAFANA_OAUTH_ORG_MAPPING="<dev 조직 id>:1:Editor <demo-b 조직 id>:<org id>:Editor <demo-c 조직 id>:<org id>:Editor"` 후 `docker compose up -d grafana`.
 6. API 용: 조직 토큰의 `aud` 가 `urn:logto:organization:<조직 id>` 이고 scope 에 `alert-rules:write`(관리자) 또는 `alerts:transition`(운영자) 가 들어가는지 확인.
    이 두 가지는 가정이다 (ADR-0010). 안 맞으면 `internal/api/auth.go` 를 고친다. 토큰은 Swagger(`/docs`) Authorize 에 붙여 시험한다.
+   Logto 의 기본 조직 권한(`read:data`, `write:data`, `manage:tenant` 등)만 있는 경우, 별도 권한을 만들지 않고 `.env` 에
+   `API_SCOPE_RULES_WRITE=manage:tenant`(admin 역할만 가짐), `API_SCOPE_ALERTS_TRANSITION=write:data`(admin·collaborator 가 가짐)를 넣으면
+   admin = 규칙 관리, collaborator = 경보 처리로 나뉜다. 이 머신의 시연은 이 설정이다. 토큰에 org 권한이 `scope` 로 실제 담기는지는 확인하지 못했다.
 
 **로그인이 끝내 안 되면:** Grafana 의 로컬 `admin` 계정으로 org 를 전환해 보여 줄 수 있다. 다만 격리 시연은 사용자 로그인이 있어야 의미가 있으므로,
 이 경우 psql 로 `grafana_tenant_2` 계정에 접속해 뷰만 보이는 것을 보여 주는 쪽을 준비한다.

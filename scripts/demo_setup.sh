@@ -28,7 +28,7 @@ for name in "${TENANTS[@]}"; do
     [[ -n "$tenant_id" ]] || { echo "tenant ${name} not found (demo seed not applied?)" >&2; exit 1; }
 
     # org: 이미 있으면 그 id 를 쓴다.
-    org_id=$(gf "${GRAFANA_URL}/api/orgs/name/${name}" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' || true)
+    org_id=$(gf "${GRAFANA_URL}/api/orgs/name/${name}" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null || true)
     if [[ -z "$org_id" ]]; then
         org_id=$(gf -X POST "${GRAFANA_URL}/api/orgs" -d "{\"name\":\"${name}\"}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["orgId"])')
     fi
