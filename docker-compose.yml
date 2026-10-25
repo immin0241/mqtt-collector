@@ -81,6 +81,7 @@ services:
       PGDATABASE: go
       APP_WORKER_PASSWORD: ${APP_WORKER_PASSWORD:-worker}
       GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-grafana}
+      API_DB_PASSWORD: ${API_DB_PASSWORD:-api}
     volumes:
       - ./seeds:/seeds:ro
     entrypoint: ["/bin/sh", "-c"]
@@ -89,7 +90,7 @@ services:
         set -e
         for f in /seeds/*.sql; do
           echo "applying $$f"
-          psql -v ON_ERROR_STOP=1 -v worker_password="$$APP_WORKER_PASSWORD" -v grafana_password="$$GRAFANA_DB_PASSWORD" -f "$$f"
+          psql -v ON_ERROR_STOP=1 -v worker_password="$$APP_WORKER_PASSWORD" -v grafana_password="$$GRAFANA_DB_PASSWORD" -v api_password="$$API_DB_PASSWORD" -f "$$f"
         done
     depends_on:
       migrate:
@@ -108,6 +109,24 @@ services:
         condition: service_healthy
       seed:
         condition: service_completed_successfully
+
+  # 경보 규칙·상태 변경 API (Swagger UI: http://localhost:8080/docs). 수집 앱과 별도 프로세스·별도 DB role. (ADR-0010)
+  # 인증은 Logto 조직 토큰. 발급자·JWKS 주소는 Logto 설정에 맞춰야 한다. docs/logto-grafana-setup.md 참고.
+  api:
+    build: .
+    command: ["./api"]
+    restart: on-failure
+    ports:
+      - "8080:8080"
+    environment:
+      API_DATABASE_URL: host=postgres user=app_api password=${API_DB_PASSWORD:-api} dbname=go port=5432 sslmode=disable
+      API_JWKS_URL: ${API_JWKS_URL:-http://logto:3001/oidc/jwks}
+      API_ISSUER: ${API_ISSUER:-http://localhost:3001/oidc}
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      logto:
+        condition: service_healthy
 
   # 수집 경로 지표 (app:9090/metrics). UI는 http://localhost:9091
   prometheus:
