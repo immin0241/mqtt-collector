@@ -123,6 +123,9 @@ services:
       API_DATABASE_URL: host=postgres user=app_api password=${API_DB_PASSWORD:-api} dbname=go port=5432 sslmode=disable
       API_JWKS_URL: ${API_JWKS_URL:-http://logto:3001/oidc/jwks}
       API_ISSUER: ${API_ISSUER:-http://localhost:3001/oidc}
+      # 토큰의 scope 이름. 기본값은 전용 scope, Logto 기본 조직 권한으로 쓰려면 manage:tenant / write:data
+      API_SCOPE_RULES_WRITE: ${API_SCOPE_RULES_WRITE:-alert-rules:write}
+      API_SCOPE_ALERTS_TRANSITION: ${API_SCOPE_ALERTS_TRANSITION:-alerts:transition}
     depends_on:
       seed:
         condition: service_completed_successfully
