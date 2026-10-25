@@ -1,5 +1,6 @@
 
 import asyncio
+import hmac
 import heapq
 import json
 import os
@@ -11,10 +12,12 @@ from datetime import datetime, timezone
 from typing import Literal
 
 import aiomqtt
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 import model as physics
+from inject import Injector
 from seqstore import SeqStore
 from sensor import Sensor, build_reading, command_topic
 
@@ -25,6 +28,12 @@ SEED = int(os.getenv("SEED", "0"))
 # 선택: seq 를 파일에 보존해 재시작 후에도 이어서 발행한다 / PUBACK 받은 전송을 대조용 로그로 남긴다.
 SEQ_STATE = os.getenv("SEQ_STATE") or None
 PUBLISH_LOG = os.getenv("PUBLISH_LOG") or None
+# 런타임 주입 이력(정답 파일). 주입이 실제로 적용될 때마다 한 줄 남긴다.
+TRUTH_LOG = os.getenv("TRUTH_LOG") or None
+# 설정하면 /control 을 뺀 모든 API 가 X-Control-Token 헤더를 요구한다. 포트를 공개할 때는 반드시 설정한다.
+CONTROL_TOKEN = os.getenv("CONTROL_TOKEN") or None
+# 시작할 때 읽을 PublisherConfig JSON. 재시작해도 센서 구성이 유지된다.
+INITIAL_CONFIG = os.getenv("INITIAL_CONFIG") or None
 
 WORKERS = 32
 QUEUE_CAPACITY = 5000
@@ -34,6 +43,7 @@ MAX_PER_SENSOR = 2000
 class SensorSpec(BaseModel):
     id: int = Field(gt=0)
     sensor_type: Literal["tilt", "crack", "env"]
+    label: str = ""  # 제어 화면 표시용 (예: 테넌트 이름)
 
 
 class PublisherConfig(BaseModel):
@@ -55,7 +65,8 @@ class PublisherConfig(BaseModel):
 
 
 class Message:
-    def __init__(self, topic: str, payload: bytes, due: float, sensor_id: int = 0, seq: int = 0):
+    def __init__(self, topic: str, payload: bytes, due: float, sensor_id: int = 0, seq: int = 0, loggable: bool = True):
+        self.loggable = loggable  # False 면 발행 로그·seq 상태에 올리지 않는다 (깨진 payload)
         self.topic = topic
         self.payload = payload
         self.due = due
@@ -82,6 +93,8 @@ sequences: dict[int, int] = seq_store.snapshot()
 # shared 모드 데모 제어: 계수 덮어쓰기, 침묵 센서
 model_overrides: dict[int, physics.ModelParams] = {}
 silenced: set[int] = set()
+injector = Injector()
+truth_log = open(TRUTH_LOG, "a", buffering=1, encoding="utf-8") if TRUTH_LOG else None
 run_epoch = time.time()  # 진행 추세의 기준 시각
 
 metrics = {
@@ -102,6 +115,12 @@ hosted: dict[int, tuple[Sensor, asyncio.Task]] = {}
 
 def model_params(sensor_id: int) -> physics.ModelParams:
     return model_overrides.get(sensor_id) or physics.default_params(SEED, sensor_id)
+
+
+def write_truth(record: dict) -> None:
+    if truth_log:
+        line = {"at": datetime.now(timezone.utc).isoformat(), **record}
+        truth_log.write(json.dumps(line, separators=(",", ":")) + "\n")
 
 
 def generate_reading(sensor: SensorSpec) -> dict:
@@ -175,21 +194,24 @@ async def scheduler():
 
         if sensor.id not in silenced:
             payload = generate_reading(sensor)
+            sends, truth = injector.apply(sensor.id, payload)
+            for record in truth:
+                write_truth(record)
 
-            msg = Message(
-                topic=f"{cfg.topic_prefix}/{sensor.sensor_type}/{sensor.id}",
-                payload=json.dumps(
-                    payload, separators=(",", ":")
-                ).encode("utf-8"),
-                due=due,
-                sensor_id=sensor.id,
-                seq=payload["seq"],
-            )
+            for send in sends:
+                msg = Message(
+                    topic=f"{cfg.topic_prefix}/{sensor.sensor_type}/{sensor.id}",
+                    payload=send.payload,
+                    due=due,
+                    sensor_id=sensor.id,
+                    seq=payload["seq"],
+                    loggable=send.loggable,
+                )
 
-            try:
-                queue.put_nowait(msg)
-            except asyncio.QueueFull:
-                metrics["dropped_queue_full"] += 1
+                try:
+                    queue.put_nowait(msg)
+                except asyncio.QueueFull:
+                    metrics["dropped_queue_full"] += 1
 
             sequences[sensor.id] = payload["seq"] + 1
 
@@ -230,9 +252,10 @@ async def publisher_worker(client: aiomqtt.Client):
             end = time.monotonic()
 
             # PUBACK 을 받은 전송만 발행 로그와 seq 상태에 올린다. (발행 측 유실과 수집 측 유실을 구분하는 근거)
-            if publish_log:
-                publish_log.write(json.dumps({"sensor_id": msg.sensor_id, "seq": msg.seq}, separators=(",", ":")) + "\n")
-            seq_store.acked(msg.sensor_id, msg.seq)
+            if msg.loggable:
+                if publish_log:
+                    publish_log.write(json.dumps({"sensor_id": msg.sensor_id, "seq": msg.seq}, separators=(",", ":")) + "\n")
+                seq_store.acked(msg.sensor_id, msg.seq)
 
             metrics["publish_completed"] += 1
             if metrics["publish_completed"] % 200 == 0:
@@ -285,7 +308,12 @@ async def run_publisher():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global stop_event
+    global stop_event, config, config_version
+
+    if INITIAL_CONFIG and os.path.exists(INITIAL_CONFIG):
+        with open(INITIAL_CONFIG, encoding="utf-8") as f:
+            config = PublisherConfig.model_validate_json(f.read())
+        config_version += 1
 
     stop_event = asyncio.Event()
     task = asyncio.create_task(run_publisher())
@@ -306,7 +334,26 @@ async def lifespan(app: FastAPI):
             pass
 
 
-app = FastAPI(lifespan=lifespan)
+PUBLIC_PATHS = {"/healthz", "/control"}
+
+
+async def require_token(request: Request):
+    """CONTROL_TOKEN 이 설정돼 있으면 X-Control-Token 이 같아야 한다. 제어 화면(/control)과 헬스체크는 예외다."""
+    if not CONTROL_TOKEN or request.url.path in PUBLIC_PATHS:
+        return
+    given = request.headers.get("x-control-token", "")
+    if not hmac.compare_digest(given.encode(), CONTROL_TOKEN.encode()):
+        raise HTTPException(status_code=401, detail="invalid or missing X-Control-Token")
+
+
+app = FastAPI(
+    lifespan=lifespan,
+    dependencies=[Depends(require_token)],
+    # 토큰을 쓰는 환경에서는 스키마·문서 화면을 공개하지 않는다.
+    docs_url=None if CONTROL_TOKEN else "/docs",
+    redoc_url=None if CONTROL_TOKEN else "/redoc",
+    openapi_url=None if CONTROL_TOKEN else "/openapi.json",
+)
 
 
 def reconcile_sensors():
@@ -391,6 +438,63 @@ async def resume_sensor(sensor_id: int):
     else:
         await send_command(sensor_id, "resume")
     return {"sensor_id": sensor_id, "command": "resume"}
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+
+
+@app.get("/control", include_in_schema=False)
+async def control_page():
+    """데모용 오류 주입 화면. 정적 페이지이며, 호출하는 API 는 토큰이 필요하다."""
+    return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "control.html"))
+
+
+@app.get("/control/state")
+async def control_state():
+    """shared 모드 센서별 현재 제어 상태 (제어 화면용)."""
+    async with config_lock:
+        specs = list(config.sensors) if config.mode == "shared" else []
+    return [
+        {
+            "id": s.id,
+            "sensor_type": s.sensor_type,
+            "label": s.label,
+            "silenced": s.id in silenced,
+            "model_overridden": s.id in model_overrides,
+            "pending": injector.snapshot(s.id),
+            "next_seq": sequences.get(s.id, 0),
+        }
+        for s in specs
+    ]
+
+
+@app.post("/sensors/{sensor_id}/inject")
+async def inject_fault(sensor_id: int, kind: str, count: int = 1):
+    """다음 count 번 발행에 오류를 주입한다. kind: out_of_range / flatline / malformed / duplicate. shared 모드 전용."""
+    if not _is_shared_sensor(sensor_id):
+        raise HTTPException(status_code=404, detail="not a shared-mode sensor")
+    try:
+        injector.add(sensor_id, kind, count)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"sensor_id": sensor_id, "pending": injector.snapshot(sensor_id)}
+
+
+@app.delete("/sensors/{sensor_id}/inject")
+async def clear_injection(sensor_id: int):
+    injector.clear(sensor_id)
+    return {"sensor_id": sensor_id, "pending": {}}
+
+
+@app.delete("/sensors/{sensor_id}/model")
+async def reset_sensor_model(sensor_id: int):
+    """계수 덮어쓰기를 지우고 기본 계수로 되돌린다. shared 모드 전용."""
+    if not _is_shared_sensor(sensor_id):
+        raise HTTPException(status_code=404, detail="not a shared-mode sensor")
+    model_overrides.pop(sensor_id, None)
+    return {"sensor_id": sensor_id, "params": model_params(sensor_id).to_dict()}
 
 
 @app.get("/sensors/{sensor_id}/model")

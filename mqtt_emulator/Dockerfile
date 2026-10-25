@@ -48,6 +48,9 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Reset the entrypoint, don't invoke `uv`
 ENTRYPOINT []
 
+# 발행 로그·seq 상태·정답 파일용 디렉터리. 이미지에서 소유자를 맞춰 두면 새 named volume 이 이를 물려받는다.
+RUN mkdir -p /data && chown nonroot:nonroot /data
+
 # Use the non-root user to run our application
 USER nonroot
 

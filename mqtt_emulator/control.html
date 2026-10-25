@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>센서 오류 주입</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1b1f24; --muted:#667085; --line:#d9dde3; --accent:#2457d6; --warn:#b42318; --ok:#067647; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171c; --card:#1d2128; --fg:#e8eaee; --muted:#9aa3b2; --line:#2e343d; --accent:#7aa2ff; --warn:#ff8a7a; --ok:#58d39b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, "Noto Sans KR", sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:16px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  p.sub { margin:0 0 16px; color:var(--muted); }
+  .bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:16px; }
+  input { padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--fg); min-width:220px; }
+  button { padding:7px 11px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--fg); cursor:pointer; font:inherit; }
+  button:hover { border-color:var(--accent); }
+  button.danger:hover { border-color:var(--warn); }
+  .group { margin-bottom:20px; }
+  .group h2 { font-size:15px; margin:0 0 8px; color:var(--muted); font-weight:600; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px; }
+  .head b { font-size:16px; }
+  .tags { display:flex; gap:6px; flex-wrap:wrap; min-height:22px; margin-bottom:8px; }
+  .tag { font-size:12px; padding:1px 8px; border-radius:99px; border:1px solid var(--line); color:var(--muted); }
+  .tag.on { color:var(--warn); border-color:var(--warn); }
+  .btns { display:flex; gap:6px; flex-wrap:wrap; }
+  #msg { min-height:22px; color:var(--muted); }
+  #msg.err { color:var(--warn); } #msg.ok { color:var(--ok); }
+</style>
+</head>
+<body>
+<main>
+  <h1>센서 오류 주입</h1>
+  <p class="sub">버튼은 다음 발행부터 적용됩니다. 주입 이력은 정답 파일(truth)에 기록됩니다.</p>
+  <div class="bar">
+    <input id="token" type="password" placeholder="제어 토큰 (X-Control-Token)" autocomplete="off">
+    <button id="save">저장</button>
+    <span id="msg" role="status"></span>
+  </div>
+  <div id="groups"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const store = { get(k) { try { return sessionStorage.getItem(k) || ""; } catch { return ""; } },
+                set(k, v) { try { sessionStorage.setItem(k, v); } catch {} } };
+$("token").value = store.get("token");
+$("save").onclick = () => { store.set("token", $("token").value); refresh(); };
+
+// 유형별 "급증" 프리셋: 경보 규칙(crack_width>5, tilt_x>5, temperature>40)을 넘기는 계수
+const SURGE = {
+  crack: { crack_base: 6.5 },
+  tilt:  { tilt_x_base: 8 },
+  env:   { base_temp: 45 },
+};
+const SURGE_LABEL = { crack: "균열 급증", tilt: "기울기 급증", env: "고온" };
+
+function say(text, cls = "") { const m = $("msg"); m.textContent = text; m.className = cls; }
+
+async function call(method, path, body) {
+  const r = await fetch(path, {
+    method,
+    headers: { "X-Control-Token": store.get("token"), ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!r.ok) {
+    let detail = r.statusText;
+    try { detail = (await r.json()).detail || detail; } catch {}
+    throw new Error(r.status + " " + detail);
+  }
+  return r.json();
+}
+
+async function act(label, method, path, body) {
+  try { await call(method, path, body); say(label + " 요청됨", "ok"); }
+  catch (e) { say(label + " 실패: " + e.message, "err"); }
+  refresh();
+}
+
+function btn(text, onclick, danger) {
+  const b = document.createElement("button");
+  b.textContent = text; if (danger) b.className = "danger"; b.onclick = onclick; return b;
+}
+
+function card(s) {
+  const el = document.createElement("div"); el.className = "card";
+  const head = document.createElement("div"); head.className = "head";
+  head.innerHTML = "<b></b><span class='tag'></span>";
+  head.firstChild.textContent = "센서 " + s.id; head.lastChild.textContent = s.sensor_type + " · seq " + s.next_seq;
+  el.append(head);
+
+  const tags = document.createElement("div"); tags.className = "tags";
+  const add = (t) => { const x = document.createElement("span"); x.className = "tag on"; x.textContent = t; tags.append(x); };
+  if (s.silenced) add("침묵 중");
+  if (s.model_overridden) add(SURGE_LABEL[s.sensor_type] + " 적용 중");
+  for (const [k, n] of Object.entries(s.pending)) add(k + " ×" + n);
+  el.append(tags);
+
+  const b = document.createElement("div"); b.className = "btns";
+  const base = "/sensors/" + s.id;
+  b.append(
+    s.silenced ? btn("복구", () => act("복구", "POST", base + "/resume"))
+               : btn("침묵", () => act("침묵", "POST", base + "/pause"), true),
+    s.model_overridden ? btn("정상값 복귀", () => act("정상값 복귀", "DELETE", base + "/model"))
+                       : btn(SURGE_LABEL[s.sensor_type], () => act(SURGE_LABEL[s.sensor_type], "PUT", base + "/model", SURGE[s.sensor_type]), true),
+    btn("범위 밖 값", () => act("범위 밖 값", "POST", base + "/inject?kind=out_of_range&count=3"), true),
+    btn("flatline", () => act("flatline", "POST", base + "/inject?kind=flatline&count=15"), true),
+    btn("깨진 JSON", () => act("깨진 JSON", "POST", base + "/inject?kind=malformed&count=1"), true),
+    btn("중복 전송", () => act("중복 전송", "POST", base + "/inject?kind=duplicate&count=1")),
+    btn("주입 취소", () => act("주입 취소", "DELETE", base + "/inject")),
+  );
+  el.append(b);
+  return el;
+}
+
+async function refresh() {
+  let list;
+  try { list = await call("GET", "/control/state"); say(""); }
+  catch (e) { say("상태 조회 실패: " + e.message, "err"); return; }
+  const groups = new Map();
+  for (const s of list) { const k = s.label || "센서"; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s); }
+  const root = $("groups"); root.replaceChildren();
+  for (const [name, items] of groups) {
+    const g = document.createElement("div"); g.className = "group";
+    const h = document.createElement("h2"); h.textContent = name;
+    const grid = document.createElement("div"); grid.className = "grid";
+    grid.append(...items.map(card));
+    g.append(h, grid); root.append(g);
+  }
+  if (!list.length) say("등록된 센서가 없습니다 (PUT /config 또는 INITIAL_CONFIG)", "err");
+}
+refresh(); setInterval(refresh, 3000);
+</script>
+</body>
+</html>

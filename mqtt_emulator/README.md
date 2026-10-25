@@ -120,3 +120,22 @@ seq 연속성: 재시작하면 `seq_state.json` 에서 이어서 발행한다 (`
 - 시나리오 실행기는 PUBACK 을 순차로 기다리므로 처리량이 브로커 왕복 시간에 묶인다 (로컬에서 rate=500 까지 확인했고 상한은 측정하지 않았다).
 - 시나리오는 JSON 만 지원한다 (YAML 은 의존성을 늘리지 않으려고 제외).
 - 실행 방법: `uv run python -m unittest discover -s tests -t .`
+
+## 실시간 모드의 런타임 오류 주입과 제어 화면
+
+shared 모드(`PUT /config` 또는 `INITIAL_CONFIG`)에서 센서별로 다음을 켤 수 있다. 시나리오 파일의 `faults` 와 같은 종류다.
+
+| 호출 | 동작 |
+| --- | --- |
+| `POST /sensors/{id}/inject?kind=out_of_range&count=N` | 다음 N번 발행의 값 하나를 범위 밖 값으로 |
+| `POST /sensors/{id}/inject?kind=flatline&count=N` | 시작 시점의 값을 N번 반복 (센서 상태 판정은 10회 이상 필요) |
+| `POST /sensors/{id}/inject?kind=malformed&count=N` | payload 절반만 전송 (발행 로그에 올리지 않음) |
+| `POST /sensors/{id}/inject?kind=duplicate&count=N` | 같은 payload 를 2번 더 전송 (전송마다 발행 로그에 기록) |
+| `DELETE /sensors/{id}/inject` | 대기 중인 주입 취소 |
+| `DELETE /sensors/{id}/model` | 계수 덮어쓰기 제거 |
+| `GET /control/state` | 센서별 침묵·덮어쓰기·대기 중 주입 |
+
+- `GET /control` 은 위 API 를 버튼으로 호출하는 화면이다.
+- 환경 변수: `CONTROL_TOKEN` (설정하면 `/control`·`/healthz` 를 뺀 모든 API 가 `X-Control-Token` 헤더 요구, `/docs` 비활성),
+  `TRUTH_LOG` (주입 이력 JSONL), `INITIAL_CONFIG` (시작 시 읽을 PublisherConfig JSON), `SEQ_STATE`, `PUBLISH_LOG`.
+- **포트를 공개할 때는 반드시 `CONTROL_TOKEN` 을 설정한다.** 설정하지 않으면 모든 API 가 열려 있다 (로컬 개발 기본값).

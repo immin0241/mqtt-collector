@@ -23,9 +23,10 @@ services:
       init:
         condition: service_completed_successfully
     ports:
-      - "1883:1883"
-      - "1884:1884"
-      - "9001:9001"
+      # 인증이 없거나 약한 서비스는 호스트 로컬에만 연다. 공개 호스트에서도 바깥으로 노출되지 않게 한다.
+      - "127.0.0.1:1883:1883"
+      - "127.0.0.1:1884:1884"
+      - "127.0.0.1:9001:9001"
     volumes:
       - ./broker1/config:/mosquitto/config
       - broker1-data:/mosquitto/data
@@ -50,7 +51,7 @@ services:
       POSTGRES_USER: go
       POSTGRES_PASSWORD: go
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql
     healthcheck:
@@ -132,7 +133,7 @@ services:
   prometheus:
     image: prom/prometheus:v3.5.0
     ports:
-      - "9091:9090"
+      - "127.0.0.1:9091:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -148,7 +149,7 @@ services:
     ports:
       - "8000:8000"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/config')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
       interval: 3s
       timeout: 3s
       retries: 10

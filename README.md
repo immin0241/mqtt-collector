@@ -142,4 +142,5 @@ CI는 푸시마다 vet과 위 첫 번째 명령을 실행하고, e2e는 GitHub A
 | `tools/reconcile/` | 발행 로그 ↔ DB 대조 도구 |
 | `mqtt_emulator/` | Python 센서 에뮬레이터 ([README](mqtt_emulator/README.md)) |
 | `prometheus/`, `grafana/` | 지표 수집 설정과 대시보드 |
+| `docker-compose.demo.yml`, `demo/`, `scripts/demo_setup.sh` | 시연(EC2) 오버레이: 센서 9개·멀티 테넌트·오류 주입 ([런북](docs/demo-runbook.md)) |
 | `docs/` | ADR(`adr/`), 실험 기록(`experiments/`), 확인 노트(`notes/`) |
