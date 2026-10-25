@@ -279,6 +279,9 @@ func TestMigration000008BackfillOnCompressedChunks(t *testing.T) {
 	conn := pg.Conn(t)
 	defer conn.Close(ctx)
 
+	// 이 테스트는 000008 을 내린 상태로 끝난다. 000010 은 복원하지 않는다(의존하는 함수가 없다).
+	_ = withoutAlertViews(t, conn)
+
 	down, err := readFile("migrations/000008_tenant_isolation.down.sql")
 	if err != nil {
 		t.Fatal(err)

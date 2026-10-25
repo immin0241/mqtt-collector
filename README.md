@@ -115,6 +115,7 @@ CI는 푸시마다 vet과 위 첫 번째 명령을 실행하고, e2e는 GitHub A
 | TC-12 통신 두절 | 조용한 센서만 offline, 복구 시 online | 통합 테스트: 센서 4개 중 1개 침묵 → 그 센서만 offline(timeout 이벤트 1건), 재수신 시 recovered. 4개 전부 조용하면 센서별 전이 없이 `stalled` 한 건 | 통과 |
 | TC-13 상태 전이 | flatline·범위 밖 → faulty, 해소 시 복구 | 통합 테스트: flatline 12회 → faulty → 값 변화 → online. 이력 connected→fault→fault_cleared. 범위 밖 반복·경보 상태 전이 동시성(20 경쟁에서 1건 성공)은 단위·통합 테스트 | 통과 |
 | TC-09 테넌트 격리 (DB 계층) | 모든 경로에서 타 테넌트 데이터 0건 | 통합 테스트(`scripts/provision_tenant.sh`로 만든 role): 뷰·기본 테이블·경보 테이블·쓰기·chunk 직접 조회·`SET`/`set_config`/`SET ROLE` 우회 모두 0건. **시험 중 세션 설정 우회 구멍을 발견해 수정(ADR-0009).** Grafana·API 경로는 미시험 | 부분 통과 |
+| TC-17 테넌트 폭주 | 다른 테넌트에 영향 없음 | 폭주 20,000건은 평온한 테넌트 p95 0.46 s, 유실 0. **폭주 150,000건에서 브로커 큐 상한(60,000) 초과로 보이는 유실 2.6%, 평온한 테넌트도 유실될 수 있음.** 조건·해석은 [phase6-tc17](docs/experiments/phase6-tc17.md). 해결 방향은 결정 대기 | 미달 |
 | TC-16 정상 종료(SIGTERM) | 종료 후 재시작해도 누락·중복 0 | 통합 테스트: 센서당 700건 모두 저장. 이 테스트가 종료 시 Unsubscribe 유실과 paho 라우트 미등록 유실을 발견해 수정 | 통과 |
 
 수집 지연: Phase 2 환경에서 `ingest_lag_seconds` p99가 약 2.9초였다(약 3 msg/s, flush 주기 2초 영향).
