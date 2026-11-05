@@ -2,3 +2,7 @@
 CLAUDE.md
 broker1/*
 .idea/
+
+# 에디터 스왑 파일
+*.swp
+*.swo
