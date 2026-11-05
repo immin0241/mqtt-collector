@@ -104,6 +104,13 @@ scripts/demo_setup.sh        # Grafana 관리자 계정은 .env 의 GRAFANA_ADMI
    `API_SCOPE_RULES_WRITE=manage:tenant`(admin 역할만 가짐), `API_SCOPE_ALERTS_TRANSITION=write:data`(admin·collaborator 가 가짐)를 넣으면
    admin = 규칙 관리, collaborator = 경보 처리로 나뉜다. 이 머신의 시연은 이 설정이다. 토큰에 org 권한이 `scope` 로 실제 담기는지는 확인하지 못했다.
 
+**매핑 변경 후에는 모든 사용자가 다시 로그인해야 한다.** Grafana 는 로그인할 때만 org 매핑을 반영하므로, 매핑을 바꾸기 전에 로그인한 사용자는 이전 org 에 남는다
+(실제로 `mapo_admin` 이 매핑에 없던 시점에 로그인해 dev org 에 들어가 있었다). 로그인을 마친 뒤 감사 스크립트로 확인한다:
+```bash
+scripts/grafana_audit.sh      # Logto 조직 → 있어야 할 Grafana org 와 실제 멤버십 비교. 어긋나면 FAIL 과 종료 코드 1
+```
+FAIL 이면 Grafana 관리자 API 로 초과 org 에서 사용자를 제거하고(`DELETE /api/orgs/<org>/users/<user id>`) 다시 로그인하게 한다.
+
 **로그인이 끝내 안 되면:** Grafana 의 로컬 `admin` 계정으로 org 를 전환해 보여 줄 수 있다. 다만 격리 시연은 사용자 로그인이 있어야 의미가 있으므로,
 이 경우 psql 로 `grafana_tenant_2` 계정에 접속해 뷰만 보이는 것을 보여 주는 쪽을 준비한다.
 
