@@ -161,6 +161,14 @@ func TestTC06_SustainedLoadWithDBLatency(t *testing.T) {
 	since := time.Now().Add(-time.Minute)
 	pub := e.publisher(t, "e2e-tc06-pub")
 	s := startSampler()
+	dropped := brokerDropped(t, e.mq.Addr(t))
+	// 대조가 실패(Fatal)해도 메모리·큐 지표와 브로커의 드롭 수는 남긴다. $SYS 값은 10초마다 갱신되어 12초 기다린 뒤 읽는다.
+	defer func() {
+		time.Sleep(12 * time.Second)
+		s.stop()
+		t.Logf("on exit: broker dropped=%s channel_depth max=%v heap base=%dMiB max=%dMiB",
+			dropped(), s.maxDepth, s.baseHeap>>20, s.maxHeap>>20)
+	}()
 
 	e.pgProxy.SetLatency(latency)
 	started := time.Now()
