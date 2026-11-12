@@ -124,8 +124,8 @@ func Run(ctx context.Context, cfg Config) error {
 		TenantChannelSize: cfg.TenantChannelSize,
 		MaxTenants:        cfg.MaxTenants,
 
-		Unsubscribed:  unsubscribed,
-		Flushed:       flushed,
+		Unsubscribed: unsubscribed,
+		Flushed:      flushed,
 	}
 	collector.CreateClient(ctx)
 
