@@ -30,7 +30,7 @@ persistence true
 persistence_location /mosquitto/data/
 autosave_interval 1
 max_inflight_messages 600
-max_queued_messages 60000
+max_queued_messages 200000
 log_type error
 log_type warning
 `
