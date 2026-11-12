@@ -348,7 +348,7 @@ func TestMigration000008BackfillOnCompressedChunks(t *testing.T) {
 	}
 	rows.Close()
 	for _, c := range chunks {
-		if _, err := conn.Exec(ctx, fmt.Sprintf(`SELECT compress_chunk('%s')`, c)); err != nil {
+		if _, err := conn.Exec(ctx, fmt.Sprintf(`SELECT compress_chunk('%s', if_not_compressed => true)`, c)); err != nil {
 			t.Fatalf("compress %s: %v", c, err)
 		}
 	}
