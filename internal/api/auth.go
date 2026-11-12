@@ -17,6 +17,7 @@ type Claims struct {
 	Subject string
 	OrgID   string          // 토큰의 audience 에서 꺼낸 IdP 조직 id. tenant.idp_org_id 와 대응한다.
 	Scopes  map[string]bool // scope 클레임
+	Expiry  time.Time       // 토큰 만료 시각(exp). Verify 가 이미 만료를 거부하며, MCP 미들웨어가 값을 요구해 돌려준다.
 }
 
 // TokenVerifier는 Bearer 토큰을 검증한다. 테스트는 키를 직접 만든 구현을, 운영은 JWKS 구현을 쓴다.
@@ -91,7 +92,11 @@ func (v *JWTVerifier) Verify(token string) (*Claims, error) {
 			scopes[f] = true
 		}
 	}
-	return &Claims{Subject: sub, OrgID: org, Scopes: scopes}, nil
+	var expiry time.Time
+	if exp, err := mc.GetExpirationTime(); err == nil && exp != nil {
+		expiry = exp.Time
+	}
+	return &Claims{Subject: sub, OrgID: org, Scopes: scopes, Expiry: expiry}, nil
 }
 
 func bearer(r *http.Request) (string, bool) {
