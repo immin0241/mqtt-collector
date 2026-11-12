@@ -74,8 +74,9 @@ func newTenantFixture(t *testing.T) *tenantFixture {
 				t.Fatal(err)
 			}
 			if _, err := conn.Exec(ctx, `
-				INSERT INTO sensor_data (time, sensor_id, seq, crack_width, received_at)
-				SELECT now() - make_interval(secs => g), $1, g, 1.0 + g, now() FROM generate_series(1, 50) g`, id); err != nil {
+				INSERT INTO sensor_data (time, sensor_id, seq, metric_id, value, received_at)
+				SELECT now() - make_interval(secs => g), $1, g, (SELECT id FROM metric WHERE name = 'crack_width'), 1.0 + g, now()
+				FROM generate_series(1, 50) g`, id); err != nil {
 				t.Fatalf("data %d: %v", id, err)
 			}
 		}
@@ -180,7 +181,7 @@ func TestTC09_TenantIsolationAtDB(t *testing.T) {
 
 	t.Run("base tables and alert tables are not readable", func(t *testing.T) {
 		conn := f.asRole(t, roleA)
-		for _, tbl := range []string{"tenant", "sensor", "sensor_data", "sensor_status", "sensor_event", "sensor_data_rejected", "alert_rule", "alert_event", "ingest_event", "sensor_data_1m"} {
+		for _, tbl := range []string{"tenant", "sensor", "sensor_data", "metric", "sensor_status", "sensor_event", "sensor_data_rejected", "alert_rule", "alert_event", "ingest_event", "sensor_data_1m"} {
 			if _, err := conn.Exec(context.Background(), "SELECT * FROM "+tbl); err == nil {
 				t.Errorf("tenant role can read base table %s", tbl)
 			}
@@ -190,7 +191,8 @@ func TestTC09_TenantIsolationAtDB(t *testing.T) {
 	t.Run("tenant role cannot write", func(t *testing.T) {
 		conn := f.asRole(t, roleA)
 		for _, q := range []string{
-			`INSERT INTO sensor_data (time, sensor_id, seq, received_at) VALUES (now(), 1, 999, now())`,
+			`INSERT INTO sensor_data (time, sensor_id, seq, metric_id, value, received_at) VALUES (now(), 1, 999, 1, 0, now())`,
+			`INSERT INTO metric (name, unit) VALUES ('x', 'y')`,
 			`UPDATE sensor SET tenant_id = 1`,
 			`DELETE FROM sensor_data`,
 		} {
@@ -270,6 +272,29 @@ func TestTC09_TenantIsolationAtDB(t *testing.T) {
 	})
 }
 
+// withWideSensorData 는 migration 000011(세로 구조)을 내려 000010 시점의 가로 sensor_data 로 돌린다.
+// 000008·000009 시험은 그 시점의 스키마를 전제로 한다. 반환된 함수가 000011 을 다시 올린다. (데이터는 폐기된다)
+func withWideSensorData(t *testing.T, conn *pgx.Conn) func() {
+	t.Helper()
+	ctx := context.Background()
+	down, err := readFile("migrations/000011_metric_catalog.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, err := readFile("migrations/000011_metric_catalog.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, down); err != nil {
+		t.Fatalf("000011 down: %v", err)
+	}
+	return func() {
+		if _, err := conn.Exec(ctx, up); err != nil {
+			t.Errorf("000011 up: %v", err)
+		}
+	}
+}
+
 // migration 000008 은 압축된 chunk 가 있는 sensor_data 에도 tenant_id 를 채우고(백필), 되돌릴 수 있다.
 func TestMigration000008BackfillOnCompressedChunks(t *testing.T) {
 	testenv.RequireDocker(t)
@@ -278,6 +303,9 @@ func TestMigration000008BackfillOnCompressedChunks(t *testing.T) {
 	ctx := context.Background()
 	conn := pg.Conn(t)
 	defer conn.Close(ctx)
+
+	// 000008 이전 스키마(가로 컬럼)가 필요하다. 이 테스트는 000011 도 내린 채로 끝난다.
+	_ = withWideSensorData(t, conn)
 
 	// 이 테스트는 000008 을 내린 상태로 끝난다. 000010 은 복원하지 않는다(의존하는 함수가 없다).
 	_ = withoutAlertViews(t, conn)
@@ -398,6 +426,9 @@ func TestLateDataReachesAggregate(t *testing.T) {
 	ctx := context.Background()
 	conn := pg.Conn(t)
 	defer conn.Close(ctx)
+
+	// 000009 시험은 가로 컬럼 스키마(000010 시점)에서 한다.
+	_ = withWideSensorData(t, conn)
 
 	runRefreshJob := func() {
 		t.Helper()

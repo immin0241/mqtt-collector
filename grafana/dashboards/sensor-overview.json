@@ -359,7 +359,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT bucket AS time, sensor_id::text AS metric, tilt_x_avg AS tilt_x, tilt_y_avg AS tilt_y\nFROM v_sensor_data_1m\nWHERE $__timeFilter(bucket) AND sensor_id IN ($sensor) AND (($__to - $__from) > 3600000) AND (tilt_x_avg IS NOT NULL OR tilt_y_avg IS NOT NULL)\nUNION ALL\nSELECT $__timeGroup(time, $__interval) AS time, sensor_id::text AS metric, avg(tilt_x) AS tilt_x, avg(tilt_y) AS tilt_y\nFROM v_sensor_data\nWHERE $__timeFilter(time) AND sensor_id IN ($sensor) AND NOT (($__to - $__from) > 3600000)\nGROUP BY 1, 2\nHAVING avg(tilt_x) IS NOT NULL OR avg(tilt_y) IS NOT NULL\nORDER BY 1"
+          "rawSql": "SELECT bucket AS time, sensor_id::text || ' ' || metric AS metric, value_avg AS value\nFROM v_sensor_data_1m\nWHERE $__timeFilter(bucket) AND sensor_id IN ($sensor) AND metric IN ('tilt_x', 'tilt_y') AND (($__to - $__from) > 3600000)\nUNION ALL\nSELECT $__timeGroup(time, $__interval) AS time, sensor_id::text || ' ' || metric AS metric, avg(value) AS value\nFROM v_sensor_data\nWHERE $__timeFilter(time) AND sensor_id IN ($sensor) AND metric IN ('tilt_x', 'tilt_y') AND NOT (($__to - $__from) > 3600000)\nGROUP BY 1, 2\nORDER BY 1"
         }
       ],
       "fieldConfig": {
@@ -408,7 +408,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT bucket AS time, sensor_id::text AS metric, crack_width_avg AS crack_width\nFROM v_sensor_data_1m\nWHERE $__timeFilter(bucket) AND sensor_id IN ($sensor) AND (($__to - $__from) > 3600000) AND (crack_width_avg IS NOT NULL)\nUNION ALL\nSELECT $__timeGroup(time, $__interval) AS time, sensor_id::text AS metric, avg(crack_width) AS crack_width\nFROM v_sensor_data\nWHERE $__timeFilter(time) AND sensor_id IN ($sensor) AND NOT (($__to - $__from) > 3600000)\nGROUP BY 1, 2\nHAVING avg(crack_width) IS NOT NULL\nORDER BY 1"
+          "rawSql": "SELECT bucket AS time, sensor_id::text || ' ' || metric AS metric, value_avg AS value\nFROM v_sensor_data_1m\nWHERE $__timeFilter(bucket) AND sensor_id IN ($sensor) AND metric IN ('crack_width') AND (($__to - $__from) > 3600000)\nUNION ALL\nSELECT $__timeGroup(time, $__interval) AS time, sensor_id::text || ' ' || metric AS metric, avg(value) AS value\nFROM v_sensor_data\nWHERE $__timeFilter(time) AND sensor_id IN ($sensor) AND metric IN ('crack_width') AND NOT (($__to - $__from) > 3600000)\nGROUP BY 1, 2\nORDER BY 1"
         }
       ],
       "fieldConfig": {
@@ -457,7 +457,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT bucket AS time, sensor_id::text AS metric, temperature_avg AS temperature\nFROM v_sensor_data_1m\nWHERE $__timeFilter(bucket) AND sensor_id IN ($sensor) AND (($__to - $__from) > 3600000) AND (temperature_avg IS NOT NULL)\nUNION ALL\nSELECT $__timeGroup(time, $__interval) AS time, sensor_id::text AS metric, avg(temperature) AS temperature\nFROM v_sensor_data\nWHERE $__timeFilter(time) AND sensor_id IN ($sensor) AND NOT (($__to - $__from) > 3600000)\nGROUP BY 1, 2\nHAVING avg(temperature) IS NOT NULL\nORDER BY 1"
+          "rawSql": "SELECT bucket AS time, sensor_id::text || ' ' || metric AS metric, value_avg AS value\nFROM v_sensor_data_1m\nWHERE $__timeFilter(bucket) AND sensor_id IN ($sensor) AND metric IN ('temperature') AND (($__to - $__from) > 3600000)\nUNION ALL\nSELECT $__timeGroup(time, $__interval) AS time, sensor_id::text || ' ' || metric AS metric, avg(value) AS value\nFROM v_sensor_data\nWHERE $__timeFilter(time) AND sensor_id IN ($sensor) AND metric IN ('temperature') AND NOT (($__to - $__from) > 3600000)\nGROUP BY 1, 2\nORDER BY 1"
         }
       ],
       "fieldConfig": {
@@ -506,7 +506,7 @@
           "editorMode": "code",
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT bucket AS time, sensor_id::text AS metric,\n       100.0 * sample_count / (60000.0 / expected_interval_ms) AS completeness\nFROM v_sensor_data_1m\nWHERE $__timeFilter(bucket) AND sensor_id IN ($sensor) AND bucket < time_bucket('1 minute', now())\nORDER BY 1"
+          "rawSql": "SELECT bucket AS time, sensor_id::text AS metric,\n       100.0 * max(sample_count) / (60000.0 / expected_interval_ms) AS completeness\nFROM v_sensor_data_1m\nWHERE $__timeFilter(bucket) AND sensor_id IN ($sensor) AND bucket < time_bucket('1 minute', now())\nGROUP BY bucket, sensor_id, expected_interval_ms\nORDER BY 1"
         }
       ],
       "fieldConfig": {
