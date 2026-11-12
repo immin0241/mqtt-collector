@@ -83,6 +83,7 @@ services:
       APP_WORKER_PASSWORD: ${APP_WORKER_PASSWORD:-worker}
       GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-grafana}
       API_DB_PASSWORD: ${API_DB_PASSWORD:-api}
+      MCP_DB_PASSWORD: ${MCP_DB_PASSWORD:-mcp}
     volumes:
       - ./seeds:/seeds:ro
     entrypoint: ["/bin/sh", "-c"]
@@ -91,7 +92,7 @@ services:
         set -e
         for f in /seeds/*.sql; do
           echo "applying $$f"
-          psql -v ON_ERROR_STOP=1 -v worker_password="$$APP_WORKER_PASSWORD" -v grafana_password="$$GRAFANA_DB_PASSWORD" -v api_password="$$API_DB_PASSWORD" -f "$$f"
+          psql -v ON_ERROR_STOP=1 -v worker_password="$$APP_WORKER_PASSWORD" -v grafana_password="$$GRAFANA_DB_PASSWORD" -v api_password="$$API_DB_PASSWORD" -v mcp_password="$$MCP_DB_PASSWORD" -f "$$f"
         done
     depends_on:
       migrate:
@@ -126,6 +127,31 @@ services:
       # 토큰의 scope 이름. 기본값은 전용 scope, Logto 기본 조직 권한으로 쓰려면 manage:tenant / write:data
       API_SCOPE_RULES_WRITE: ${API_SCOPE_RULES_WRITE:-alert-rules:write}
       API_SCOPE_ALERTS_TRANSITION: ${API_SCOPE_ALERTS_TRANSITION:-alerts:transition}
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      logto:
+        condition: service_healthy
+
+  # 테넌트 일일 리포트용 읽기 전용 MCP 서버 (http://localhost:8090/mcp). 별도 프로세스, 도구는 읽기 전용. (ADR-0014)
+  # 테넌트별 DB role(mcp_tenant_<id>)은 scripts/provision_mcp_tenant.sh 로 만든다. 같은 MCP_ROLE_SECRET 을 써야 한다.
+  # 원격 커넥터는 HTTPS 가 필요하다. 이 서비스는 평문 HTTP 이므로 TLS 종단은 앞단(reverse proxy)에서 한다.
+  mcp:
+    build: .
+    command: ["./mcp"]
+    restart: on-failure
+    ports:
+      - "8090:8090"
+    environment:
+      MCP_DATABASE_URL: host=postgres user=app_mcp password=${MCP_DB_PASSWORD:-mcp} dbname=go port=5432 sslmode=disable
+      MCP_DB_HOST: postgres
+      MCP_ROLE_SECRET: ${MCP_ROLE_SECRET:-dev-only-mcp-role-secret-change-me}
+      MCP_JWKS_URL: ${MCP_JWKS_URL:-http://logto:3001/oidc/jwks}
+      MCP_ISSUER: ${MCP_ISSUER:-http://localhost:3001/oidc}
+      MCP_RESOURCE_URL: ${MCP_RESOURCE_URL:-http://localhost:8090/mcp}
+      MCP_METADATA_URL: ${MCP_METADATA_URL:-http://localhost:8090/.well-known/oauth-protected-resource}
+      MCP_REPORT_TZ: ${MCP_REPORT_TZ:-Asia/Seoul}
+      MCP_SCOPE_REPORTS_READ: ${MCP_SCOPE_REPORTS_READ:-reports:read}
     depends_on:
       seed:
         condition: service_completed_successfully

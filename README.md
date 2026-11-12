@@ -98,6 +98,7 @@ CI는 푸시마다 vet과 위 첫 번째 명령을 실행하고, e2e는 GitHub A
 | [0011](docs/adr/0011-tenant-surge-isolation.md) | 테넌트 폭주 격리: 테넌트별 구독 세션·큐 분리, topic `sensors/{tenant_id}/...`, 단일 저장 워커 유지 (구현 완료) |
 | [0012](docs/adr/0012-metric-catalog-narrow-sensor-data.md) | 측정값을 세로 구조(metric, value)로 바꾸고 단위는 metric 카탈로그에 둔다. 기존 측정 데이터 폐기 |
 | [0013](docs/adr/0013-value-range-validation.md) | 범위 밖 측정값·비정상 시각은 그 메시지만 격리하고 ack, 범위는 metric 카탈로그 컬럼에 둔다 |
+| [0014](docs/adr/0014-mcp-daily-report.md) | 테넌트 일일 리포트 MCP 서버: 읽기 전용 도구, Logto 조직 토큰, 테넌트별 DB role(격리는 DB가 보장) |
 
 ## 측정 결과
 
@@ -129,6 +130,7 @@ CI는 푸시마다 vet과 위 첫 번째 명령을 실행하고, e2e는 GitHub A
 - 발행 측 버퍼링과 발행 로그는 시나리오 실행기에만 있다. FastAPI 데모 서버는 브로커 단절 중 생성분을 버퍼링하지 않는다.
 - TC-06 5분 조건은 `max_queued_messages 200000`에서만 통과한다. 부족분이 큐보다 길면 다시 유실된다(큐 상향은 유실 시점을 늦출 뿐, 쓰기 경로 개선은 [phase7-insert-strategies](docs/experiments/phase7-insert-strategies.md)에 후보만 있고 미적용). 큐가 찬 세션 하나의 브로커 메모리는 약 130 MiB.
 - 범위 밖 값·비정상 시각 검증은 ADR-0013으로 해결했다(격리 테이블로 보내고 ack).
+- MCP 리포트 서버(ADR-0014): 격리·인증 거부·읽기 전용은 자체 서명 토큰으로 통합 테스트했다. **실제 Logto 토큰(조직 aud, scope)과 Claude 커넥터 흐름(디스커버리·PKCE·클라이언트 등록)은 검증하지 못했다.** 원격 커넥터는 HTTPS가 필요한데 스택은 평문 HTTP다. 리포트 품질은 평가하지 않았다. 스킬은 `skills/daily-report/SKILL.md`.
 - 센서 상태/경보(ADR-0008): 정상 범위·flatline 횟수는 센서 종류와 무관한 전역 기본값이다. 경보 큐가 차면 경보를 버린다(`alerts_dropped_total`).
   DB 중단 중 센서 상태가 바뀌지 않는지는 단위 테스트(Requeue)로만 확인했고 e2e로는 확인하지 않았다. 경보 규칙을 등록하는 API는 Phase 6이며 지금은 SQL로 넣는다.
 - Grafana의 Prometheus 데이터소스는 기본 org(1)에 등록된다. 지표에는 sensor_id가 없지만 전 테넌트 합산이므로,
