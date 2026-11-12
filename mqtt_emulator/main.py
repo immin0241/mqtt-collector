@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 import model as physics
 from inject import Injector
 from seqstore import SeqStore
-from sensor import Sensor, build_reading, command_topic
+from sensor import Sensor, build_reading, command_topic, data_topic
 
 
 MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
@@ -44,6 +44,7 @@ class SensorSpec(BaseModel):
     id: int = Field(gt=0)
     sensor_type: Literal["tilt", "crack", "env"]
     label: str = ""  # 제어 화면 표시용 (예: 테넌트 이름)
+    tenant_id: int = Field(default=1, gt=0)  # 토픽 sensors/{tenant_id}/... 에 들어간다
 
 
 class PublisherConfig(BaseModel):
@@ -200,7 +201,7 @@ async def scheduler():
 
             for send in sends:
                 msg = Message(
-                    topic=f"{cfg.topic_prefix}/{sensor.sensor_type}/{sensor.id}",
+                    topic=data_topic(cfg.topic_prefix, sensor.tenant_id, sensor.sensor_type, sensor.id),
                     payload=send.payload,
                     due=due,
                     sensor_id=sensor.id,
@@ -387,6 +388,7 @@ def reconcile_sensors():
             jitter=config.jitter_fraction,
             qos=config.qos,
             topic_prefix=config.topic_prefix,
+            tenant_id=spec.tenant_id,
         )
         hosted[sensor_id] = (sensor, asyncio.create_task(sensor.run()))
 
@@ -461,6 +463,7 @@ async def control_state():
             "id": s.id,
             "sensor_type": s.sensor_type,
             "label": s.label,
+            "tenant_id": s.tenant_id,
             "silenced": s.id in silenced,
             "model_overridden": s.id in model_overrides,
             "pending": injector.snapshot(s.id),

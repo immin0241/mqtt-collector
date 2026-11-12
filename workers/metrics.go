@@ -49,6 +49,10 @@ var (
 		Name: "last_flush_timestamp",
 		Help: "마지막으로 배치 저장에 성공한 시각 (Unix 초)",
 	})
+	tenantSessions = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "tenant_sessions",
+		Help: "브로커에 연결된 테넌트 세션 수 (ADR-0011). tenant_id 를 라벨로 쓰지 않는다.",
+	})
 )
 
 var (
