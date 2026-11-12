@@ -91,7 +91,7 @@ func TestTC17_TenantSurge(t *testing.T) {
 		deadline := start.Add(3 * time.Minute)
 		for {
 			var n int
-			if err := poll.QueryRow(ctx, `SELECT count(*) FROM sensor_data WHERE sensor_id = $1 AND seq = $2`, calmID, seq).Scan(&n); err != nil {
+			if err := poll.QueryRow(ctx, `SELECT count(DISTINCT time) FROM sensor_data WHERE sensor_id = $1 AND seq = $2`, calmID, seq).Scan(&n); err != nil {
 				t.Fatal(err)
 			}
 			if n == 1 {

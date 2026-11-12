@@ -20,7 +20,8 @@ func LoadSnapshot(ctx context.Context, conn *pgx.Conn, since, until time.Time) (
 	var snap Snapshot
 	var err error
 	snap.Stored, err = queryCounts(ctx, conn,
-		`SELECT sensor_id, seq, count(*) FROM sensor_data
+		// 한 메시지는 지표별로 여러 행이 되지만 time은 같다. time이 다른 같은 (sensor_id, seq)만 중복으로 센다.
+		`SELECT sensor_id, seq, count(DISTINCT time) FROM sensor_data
 		  WHERE received_at >= $1 AND received_at < $2 GROUP BY sensor_id, seq`, since, until)
 	if err != nil {
 		return snap, err

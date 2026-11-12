@@ -79,6 +79,12 @@ func Run(ctx context.Context, cfg Config) error {
 		defer sqlDB.Close()
 	}
 
+	// metric 카탈로그에 KnownMetrics가 모두 있어야 기동한다. (마이그레이션 000011)
+	store, err := workers.NewGormStore(ctx, db)
+	if err != nil {
+		return fmt.Errorf("init store: %w", err)
+	}
+
 	tracker := workers.NewHealthTrackerWithConfig(workers.HealthConfig{
 		MinTimeout:      cfg.HealthMinTimeout,
 		TimeoutFactor:   cfg.HealthTimeoutFactor,
@@ -113,7 +119,7 @@ func Run(ctx context.Context, cfg Config) error {
 	collector.CreateClient(ctx)
 
 	pusher := &workers.DbPushWorker{
-		Store:           workers.GormStore{DB: db},
+		Store:           store,
 		DataChannel:     data,
 		BatchSize:       cfg.BatchSize,
 		FlushInterval:   cfg.FlushInterval,

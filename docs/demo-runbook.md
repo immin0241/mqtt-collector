@@ -122,7 +122,7 @@ FAIL 이면 Grafana 관리자 API 로 초과 org 에서 사용자를 제거하�
 ```bash
 docker compose logs emulator | tail -3
 curl -s -H "X-Control-Token: $CONTROL_TOKEN" localhost:8000/control/state | head -c 300
-docker compose exec -T postgres psql -U go -d go -c "select sensor_id, count(*) from sensor_data group by 1 order by 1"
+docker compose exec -T postgres psql -U go -d go -c "select sensor_id, count(distinct seq) as messages, count(*) as measurement_rows from sensor_data group by 1 order by 1"
 ```
 
 - 센서 9개가 모두 늘어나는지, `sensor_data_rejected` 가 0인지 확인한다.
