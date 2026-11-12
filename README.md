@@ -88,7 +88,7 @@ CI는 푸시마다 vet과 위 첫 번째 명령을 실행하고, e2e는 GitHub A
 | [0001](docs/adr/0001-ack-timing.md) | 수동 ack, 배치 커밋 뒤 일괄 ack |
 | [0002](docs/adr/0002-retry-and-backpressure.md) | 일시적 오류는 무한 지수 백오프 재시도, 채널 포화 시 수신 정지 |
 | [0003](docs/adr/0003-error-classification-and-quarantine.md) | SQLSTATE 22/23은 영구 오류, 이분법으로 문제 행만 격리 |
-| [0004](docs/adr/0004-broker-inflight-and-queue.md) | `max_inflight_messages 600`, `max_queued_messages 60000` |
+| [0004](docs/adr/0004-broker-inflight-and-queue.md) | `max_inflight_messages 600`, `max_queued_messages 200000` (TC-06 5분 조건 때문에 60000에서 상향, 세션당 최악 ~130 MiB) |
 | [0005](docs/adr/0005-keep-gorm.md) | gorm 유지, pgx 오류 코드로 분류 |
 | [0006](docs/adr/0006-sensor-data-tenant-id-removal.md) | `sensor_data.tenant_id` 제거 이력 |
 | [0007](docs/adr/0007-shutdown-keeps-subscription.md) | 정상 종료 시 구독을 해제하지 않는다 (TC-16) |
@@ -113,13 +113,13 @@ CI는 푸시마다 vet과 위 첫 번째 명령을 실행하고, e2e는 GitHub A
 | TC-03 브로커 10초 중지 | 재연결·재구독, 누락 0, 중복 0 | e2e: 누락·중복 0. 발행기가 PUBACK 받은 것만 기록하므로 수집 측 유실 0을 입증(Phase 1의 1건 누락은 발행 측 유실이었음). 시나리오 실행기 6초 단절도 누락 0 | 통과 |
 | TC-04 SIGKILL | 재시작 후 누락 0 | e2e(500 msg/s, 바이너리 SIGKILL 후 3초 뒤 재시작): 누락·중복 0 | 통과 |
 | TC-05 같은 이벤트 3회 | DB 1건, 중복 제거 지표 증가 | 통합 테스트: DB 1건, `dedup_total` +2 | 통과 |
-| TC-06 1,000 msg/s 5분 + DB 지연 | 메모리 상한, 누락·중복 0 | e2e **30초**(DB 지연 100ms/방향): 누락·중복 0, `channel_depth` 최대 407, 힙 4→9MiB. **5분 조건: 메모리 상한은 지켰으나(채널 최대 410, 힙 4→60MiB) 누락 45.5%(약 134,900건), 브로커 드롭 수 134,883과 일치** — 백프레셔가 브로커 큐 한도에서 끊긴다. 조건·선택지는 [phase7-tc06-5min](docs/experiments/phase7-tc06-5min.md) | 메모리 통과, 누락 미달 |
+| TC-06 1,000 msg/s 5분 + DB 지연 | 메모리 상한, 누락·중복 0 | e2e **5분**(DB 지연 100ms/방향, 970 msg/s, 291,076건): **누락·중복 0, 브로커 드롭 0**, `channel_depth` 최대 439, 힙 4→60MiB, 해소 42.6s. `max_queued_messages 60000`에서는 누락 45.5%였고(브로커 드롭 수 134,883과 일치) 큐를 200,000으로 올려 해결 — 원인은 큐 한도. 부족분이 큐보다 길면 다시 넘친다. [phase7-tc06-5min](docs/experiments/phase7-tc06-5min.md) | 통과 (큐 크기 의존) |
 | TC-07 형식 오류·FK 위반 | 격리, 정상 행 저장, 무한 재시도 없음 | 통합 테스트: 깨진 JSON, FK 위반 격리, 정상 행 저장, 재시도 루프 없음. **범위 밖 값은 제약이 없어 격리되지 않음** | 부분 통과 |
 | TC-08 경보 정확성·지연 | 임계치 경보 정확, 지연 p99 2초 | 통합 테스트: 위반 지속·재전달 3회에도 경보는 위반 진입 시점 2건뿐, `created_at − triggered_at` 최대 0.003초(경보 2건, 같은 호스트 시계). **p99를 낼 표본이 아니다. 부하 상태의 지연은 미측정** | 부분 통과 |
 | TC-12 통신 두절 | 조용한 센서만 offline, 복구 시 online | 통합 테스트: 센서 4개 중 1개 침묵 → 그 센서만 offline(timeout 이벤트 1건), 재수신 시 recovered. 4개 전부 조용하면 센서별 전이 없이 `stalled` 한 건 | 통과 |
 | TC-13 상태 전이 | flatline·범위 밖 → faulty, 해소 시 복구 | 통합 테스트: flatline 12회 → faulty → 값 변화 → online. 이력 connected→fault→fault_cleared. 범위 밖 반복·경보 상태 전이 동시성(20 경쟁에서 1건 성공)은 단위·통합 테스트 | 통과 |
 | TC-09 테넌트 격리 (DB 계층) | 모든 경로에서 타 테넌트 데이터 0건 | 통합 테스트(`scripts/provision_tenant.sh`로 만든 role): 뷰·기본 테이블·경보 테이블·쓰기·chunk 직접 조회·`SET`/`set_config`/`SET ROLE` 우회 모두 0건. **시험 중 세션 설정 우회 구멍을 발견해 수정(ADR-0009).** 경보 뷰와 대시보드 쿼리 13개도 tenant role로 검증. API 경로는 통합 테스트(타 조직 규칙·경보 404, 타 조직 센서 규칙 422). Grafana 로그인 경로는 Logto 로그인 후 사용자 2명이 각자 org에만 속함을 `scripts/grafana_audit.sh`로 확인(수동 1회, 매핑 변경 전에 로그인한 사용자는 이전 org에 남아 있었고 수정함). 실제 Logto 토큰으로 API 인증은 미시험 | 부분 통과 |
-| TC-17 테넌트 폭주 | 다른 테넌트에 영향 없음 | 폭주 150,000건(한 테넌트)에서 **평온한 테넌트 유실 0건, 저장 지연 p95 147 ms**, 폭주 20,000건은 p95 205 ms 로 전부 저장. **폭주 테넌트 자신은 큐 상한 초과로 32.8% 유실**(세로 구조로 메시지 처리 용량이 절반이 된 영향, ADR-0012). 조건·A/B 대조는 [phase7-tc17-tenant-sessions](docs/experiments/phase7-tc17-tenant-sessions.md), 결정은 [ADR-0011](docs/adr/0011-tenant-surge-isolation.md). | 격리는 통과, 폭주 테넌트 유실은 미달 |
+| TC-17 테넌트 폭주 | 다른 테넌트에 영향 없음 | 폭주 150,000건(한 테넌트): **평온한 테넌트 유실 0건, 저장 지연 p95 148 ms**. 큐 60,000에서는 폭주 테넌트 자신이 32.8% 유실, 200,000으로 올리면 폭주 테넌트도 0% 유실. 조건·A/B 대조는 [phase7-tc17-tenant-sessions](docs/experiments/phase7-tc17-tenant-sessions.md), 결정은 [ADR-0011](docs/adr/0011-tenant-surge-isolation.md). | 통과 |
 | TC-16 정상 종료(SIGTERM) | 종료 후 재시작해도 누락·중복 0 | 통합 테스트: 센서당 700건 모두 저장. 이 테스트가 종료 시 Unsubscribe 유실과 paho 라우트 미등록 유실을 발견해 수정 | 통과 |
 
 수집 지연: Phase 2 환경에서 `ingest_lag_seconds` p99가 약 2.9초였다(약 3 msg/s, flush 주기 2초 영향).
@@ -127,8 +127,8 @@ CI는 푸시마다 vet과 위 첫 번째 명령을 실행하고, e2e는 GitHub A
 ## 알려진 한계
 
 - 발행 측 버퍼링과 발행 로그는 시나리오 실행기에만 있다. FastAPI 데모 서버는 브로커 단절 중 생성분을 버퍼링하지 않는다.
-- TC-06은 30초 조건만 측정했다. 5분 조건(`E2E_TC06_DURATION=5m`)과 적체가 `max_queued_messages`를 넘는 조건은 미측정이다.
-- 범위 밖 값, 시간이 0인 payload 검증이 미결이다(ADR-0003).
+- TC-06 5분 조건은 `max_queued_messages 200000`에서만 통과한다. 부족분이 큐보다 길면 다시 유실된다(큐 상향은 유실 시점을 늦출 뿐, 쓰기 경로 개선은 [phase7-insert-strategies](docs/experiments/phase7-insert-strategies.md)에 후보만 있고 미적용). 큐가 찬 세션 하나의 브로커 메모리는 약 130 MiB.
+- 범위 밖 값·비정상 시각 검증은 ADR-0013으로 해결했다(격리 테이블로 보내고 ack).
 - 센서 상태/경보(ADR-0008): 정상 범위·flatline 횟수는 센서 종류와 무관한 전역 기본값이다. 경보 큐가 차면 경보를 버린다(`alerts_dropped_total`).
   DB 중단 중 센서 상태가 바뀌지 않는지는 단위 테스트(Requeue)로만 확인했고 e2e로는 확인하지 않았다. 경보 규칙을 등록하는 API는 Phase 6이며 지금은 SQL로 넣는다.
 - Grafana의 Prometheus 데이터소스는 기본 org(1)에 등록된다. 지표에는 sensor_id가 없지만 전 테넌트 합산이므로,
