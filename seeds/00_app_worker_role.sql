@@ -11,6 +11,8 @@ GRANT SELECT ON sensor TO app_worker;
 GRANT SELECT, INSERT, UPDATE ON sensor_status TO app_worker;
 GRANT INSERT ON sensor_event TO app_worker;
 GRANT INSERT ON sensor_data TO app_worker;
+-- INSERT ... RETURNING sensor_id, seq, time (새로 저장된 메시지 수 계산)에 필요한 최소 권한. 값 컬럼은 읽지 못한다.
+GRANT SELECT (sensor_id, seq, time) ON sensor_data TO app_worker;
 GRANT SELECT ON metric TO app_worker;
 GRANT INSERT ON sensor_data_rejected TO app_worker;
 GRANT SELECT ON alert_rule TO app_worker;
