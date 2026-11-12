@@ -96,6 +96,8 @@ func Run(ctx context.Context, cfg Config) error {
 		Grace:           cfg.HealthGrace,
 		FlatlineCount:   cfg.FlatlineCount,
 		OutOfRangeCount: cfg.OutOfRangeCount,
+		// 수집 검증(범위 밖 값 격리)과 같은 범위를 쓴다. 정의는 metric 카탈로그 한 곳이다. (ADR-0013)
+		Ranges: store.Ranges(),
 	})
 	workers.RegisterSensorStates(tracker)
 
