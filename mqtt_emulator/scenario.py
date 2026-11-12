@@ -29,6 +29,7 @@ class _Strict(BaseModel):
 class SensorDef(_Strict):
     id: int = Field(gt=0)
     type: SensorType
+    tenant_id: int = Field(default=1, gt=0)  # 토픽 sensors/{tenant_id}/{type}/{id}
     model: dict[str, float] = Field(default_factory=dict)  # ModelParams 덮어쓰기
 
 
@@ -141,7 +142,7 @@ def events(sc: Scenario, start_seqs: dict[int, int] | None = None) -> Iterator[E
         for s in sc.sensors:
             seq = start_seqs.get(s.id, 0) + i
             t = t0 + seq * sc.interval_seconds
-            topic = f"{sc.topic_prefix}/{s.type}/{s.id}"
+            topic = f"{sc.topic_prefix}/{s.tenant_id}/{s.type}/{s.id}"
 
             silence = next((w for w in f.silence if w.covers(s.id, seq)), None)
             if silence is not None:

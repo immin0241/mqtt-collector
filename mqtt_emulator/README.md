@@ -86,7 +86,7 @@ seq 연속성: 재시작하면 `seq_state.json` 에서 이어서 발행한다 (`
 
 센서 1개 = 컨테이너 1개로 띄우려면 `docker compose --profile sensors up -d sensor-101 sensor-102 sensor-103`.
 `docker kill` 은 LWT(offline)를, `docker stop` 은 정상 종료를 만든다. 컨테이너 센서는 `run_sensor.py` 를 쓰며
-`SENSOR_ID`, `SENSOR_TYPE`, `INTERVAL_SECONDS`, `JITTER_FRACTION`, `QOS`, `TOPIC_PREFIX`, `KEEPALIVE_SECONDS` 를 읽는다.
+`SENSOR_ID`, `SENSOR_TYPE`, `INTERVAL_SECONDS`, `JITTER_FRACTION`, `QOS`, `TOPIC_PREFIX`, `TENANT_ID`, `KEEPALIVE_SECONDS` 를 읽는다.
 
 ## API
 
@@ -102,7 +102,7 @@ seq 연속성: 재시작하면 `seq_state.json` 에서 이어서 발행한다 (`
 
 ## 메시지
 
-토픽 `sensors/{type}/{id}`, QoS 1, JSON:
+토픽 `sensors/{tenant_id}/{type}/{id}`, QoS 1, JSON (`tenant_id` 는 센서 정의의 `tenant_id`, 생략하면 1. 수집기가 테넌트별로 구독한다, ADR-0011):
 
 ```json
 {"sensor_id": 101, "seq": 42, "time": "2026-10-23T01:02:03.456789+00:00",
@@ -111,7 +111,7 @@ seq 연속성: 재시작하면 `seq_state.json` 에서 이어서 발행한다 (`
 
 - `seq` 는 센서별로 0부터 증가하며 DB의 중복 판정 키 `(sensor_id, seq, time)` 에 쓰인다. `SEQ_STATE` 를 주면 재시작 후에도 이어진다.
 - 센서 타입별로 채워지는 필드: `tilt` → `tilt_x`, `tilt_y` / `crack` → `crack_width` / `env` → `temperature`. 나머지는 `null`. 값은 물리 모델이 만든다.
-- 상태 토픽 `sensors/{type}/{id}/status` 는 `online` / `offline` (retained, LWT) 이다.
+- 상태 토픽 `sensors/{tenant_id}/{type}/{id}/status` 는 `online` / `offline` (retained, LWT) 이다.
 
 ## 알려진 한계
 

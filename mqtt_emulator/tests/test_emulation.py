@@ -35,6 +35,31 @@ def read_lines(path: str) -> list[str]:
         return f.read().splitlines()
 
 
+class TenantTopicTest(unittest.TestCase):
+    """토픽은 sensors/{tenant_id}/{type}/{id} 이다. 수집기가 테넌트별로 구독한다. (ADR-0011)"""
+
+    def test_scenario_topics_carry_tenant(self):
+        sc = make(count=1, sensors=[
+            {"id": 1, "type": "tilt"},  # tenant_id 생략 -> 1
+            {"id": 2, "type": "crack", "tenant_id": 7},
+        ])
+        topics = {e.sensor_id: e.topic for e in events(sc)}
+        self.assertEqual(topics[1], "sensors/1/tilt/1")
+        self.assertEqual(topics[2], "sensors/7/crack/2")
+
+    def test_sensor_data_and_status_topics(self):
+        from sensor import Sensor, data_topic
+
+        self.assertEqual(data_topic("sensors", 3, "env", 9), "sensors/3/env/9")
+        s = Sensor(9, "env", "localhost", tenant_id=3)
+        self.assertEqual(s.data_topic, "sensors/3/env/9")
+        self.assertEqual(s.status_topic, "sensors/3/env/9/status")
+
+    def test_tenant_id_must_be_positive(self):
+        with self.assertRaises(Exception):
+            make(sensors=[{"id": 1, "type": "tilt", "tenant_id": 0}])
+
+
 class ModelTest(unittest.TestCase):
     def test_reading_is_pure(self):
         p = physics.default_params(1, 5)

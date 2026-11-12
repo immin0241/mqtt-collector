@@ -22,6 +22,7 @@ type Publisher struct {
 	mu        sync.Mutex
 	published reconcile.SeqCounts
 	next      map[int]int64
+	tenants   map[int]int // sensorID -> tenantID (없으면 기본 테넌트)
 }
 
 // NewPublisher는 브로커(host:port)에 연결한다.
@@ -44,10 +45,36 @@ func NewPublisher(t testing.TB, brokerAddr, clientID string) *Publisher {
 	return &Publisher{t: t, client: c, published: reconcile.SeqCounts{}, next: map[int]int64{}}
 }
 
-// Topic은 센서의 데이터 토픽이다. 타입은 id % 3 으로 SeedSensors와 맞춘다.
-func Topic(sensorID int) string {
+// DefaultTenantID는 SeedSensors가 만드는 테넌트의 id다. (첫 번째 테넌트)
+const DefaultTenantID = 1
+
+// TopicFor는 테넌트 센서의 데이터 토픽이다: sensors/{tenant_id}/{type}/{sensor_id}.
+// 타입은 id % 3 으로 SeedSensors와 맞춘다.
+func TopicFor(tenantID, sensorID int) string {
 	types := []string{"tilt", "crack", "env"}
-	return fmt.Sprintf("sensors/%s/%d", types[sensorID%3], sensorID)
+	return fmt.Sprintf("sensors/%d/%s/%d", tenantID, types[sensorID%3], sensorID)
+}
+
+// Topic은 기본 테넌트(DefaultTenantID) 센서의 데이터 토픽이다.
+func Topic(sensorID int) string { return TopicFor(DefaultTenantID, sensorID) }
+
+// SetTenant은 센서가 속한 테넌트를 지정한다. 지정하지 않은 센서는 기본 테넌트다.
+func (p *Publisher) SetTenant(sensorID, tenantID int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.tenants == nil {
+		p.tenants = map[int]int{}
+	}
+	p.tenants[sensorID] = tenantID
+}
+
+func (p *Publisher) topic(sensorID int) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if t, ok := p.tenants[sensorID]; ok {
+		return TopicFor(t, sensorID)
+	}
+	return Topic(sensorID)
 }
 
 // Payload는 에뮬레이터와 같은 필드를 가진 측정값 JSON이다.
@@ -76,7 +103,7 @@ func (p *Publisher) Next(ctx context.Context, sensorID int) (int64, error) {
 
 	payload := Payload(sensorID, seq, time.Now())
 	for {
-		if err := p.PublishRaw(Topic(sensorID), payload); err == nil {
+		if err := p.PublishRaw(p.topic(sensorID), payload); err == nil {
 			break
 		}
 		select {

@@ -19,6 +19,7 @@ async def main():
         jitter=float(os.getenv("JITTER_FRACTION", "0.1")),
         qos=int(os.getenv("QOS", "1")),
         topic_prefix=os.getenv("TOPIC_PREFIX", "sensors"),
+        tenant_id=int(os.getenv("TENANT_ID", "1")),
         keepalive=int(os.getenv("KEEPALIVE_SECONDS", "5")),
         seed=int(os.getenv("SEED", "0")),
         seq_state=os.getenv("SEQ_STATE") or None,

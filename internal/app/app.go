@@ -48,6 +48,11 @@ type Config struct {
 	OutOfRangeCount     int           // 범위 밖 값 연속 N회면 장애. 기본 3
 	AlertQueue          int           // 경보 후보 큐 크기. 기본 1000
 	AlertRefresh        time.Duration // 경보 규칙 재로딩 주기. 기본 10s
+
+	// 테넌트별 MQTT 세션 (ADR-0011)
+	TenantRefresh     time.Duration // tenant 목록 재조회 주기. 기본 10s
+	TenantChannelSize int           // 테넌트별 채널 크기. 기본 100
+	MaxTenants        int           // 동시 세션 상한. 기본 50
 }
 
 // Run은 ctx가 취소될 때까지 수집을 수행하고, 종료 절차(수신 중단 → drain → 최종 flush → ack → 연결 종료)를 마친 뒤 반환한다.
@@ -113,6 +118,12 @@ func Run(ctx context.Context, cfg Config) error {
 		DataChannel:   data,
 		Tracker:       tracker,
 		Alerts:        alerts,
+
+		Tenants:           workers.GormTenantSource{DB: db},
+		TenantRefresh:     cfg.TenantRefresh,
+		TenantChannelSize: cfg.TenantChannelSize,
+		MaxTenants:        cfg.MaxTenants,
+
 		Unsubscribed:  unsubscribed,
 		Flushed:       flushed,
 	}

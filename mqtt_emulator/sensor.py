@@ -33,6 +33,10 @@ def build_reading(
     return {"sensor_id": sensor_id, "seq": seq, "time": now.isoformat(), **values}
 
 
+def data_topic(prefix: str, tenant_id: int, sensor_type: str, sensor_id: int) -> str:
+    return f"{prefix}/{tenant_id}/{sensor_type}/{sensor_id}"
+
+
 def command_topic(sensor_id: int) -> str:
     return f"cmd/sensor/{sensor_id}"
 
@@ -48,6 +52,7 @@ class Sensor:
         jitter: float = 0.1,
         qos: int = 1,
         topic_prefix: str = "sensors",
+        tenant_id: int = 1,
         keepalive: int = 5,
         seed: int = 0,
         seq_state: str | None = None,
@@ -61,7 +66,9 @@ class Sensor:
         self.jitter = jitter
         self.qos = qos
         self.keepalive = keepalive
-        self.data_topic = f"{topic_prefix}/{sensor_type}/{sensor_id}"
+        self.tenant_id = tenant_id
+        # sensors/{tenant_id}/{type}/{sensor_id} (ADR-0011: 수집기가 테넌트별로 구독한다)
+        self.data_topic = data_topic(topic_prefix, tenant_id, sensor_type, sensor_id)
         self.status_topic = f"{self.data_topic}/status"
 
         self.seed = seed

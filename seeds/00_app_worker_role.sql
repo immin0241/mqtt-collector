@@ -8,6 +8,8 @@ SELECT format('ALTER ROLE app_worker PASSWORD %L', :'worker_password')
 \gexec
 
 GRANT SELECT ON sensor TO app_worker;
+-- 수집기가 테넌트별 MQTT 세션을 만들려고 tenant.id 만 읽는다. (ADR-0011)
+GRANT SELECT (id) ON tenant TO app_worker;
 GRANT SELECT, INSERT, UPDATE ON sensor_status TO app_worker;
 GRANT INSERT ON sensor_event TO app_worker;
 GRANT INSERT ON sensor_data TO app_worker;
