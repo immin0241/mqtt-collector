@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -146,6 +147,57 @@ func TestMessageWithoutMeasurementIsQuarantined(t *testing.T) {
 	}
 	if got := pgCount(t, pg, `SELECT count(*) FROM sensor_data WHERE seq = 7`); got != 0 {
 		t.Fatalf("empty message left %d measurement rows", got)
+	}
+}
+
+// 운영 워커는 슈퍼유저가 아니라 app_worker role이다. INSERT ... RETURNING 이 그 권한으로 동작해야 한다.
+// (권한이 부족하면 일시적 오류로 분류되어 영원히 재시도한다. 실제로 로컬 스택에서 발생했다)
+func TestStoreWorksWithAppWorkerRole(t *testing.T) {
+	testenv.RequireDocker(t)
+	pg := testenv.StartPostgres(t)
+	pg.SeedSensors(t, 1)
+	ctx := context.Background()
+
+	seed, err := readFile("seeds/00_app_worker_role.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := pg.Conn(t)
+	defer admin.Close(ctx)
+	if _, err := admin.Exec(ctx, `CREATE ROLE app_worker LOGIN PASSWORD 'w'`); err != nil {
+		t.Fatal(err)
+	}
+	// 시드 파일의 sensor_data·metric·sensor 관련 GRANT 문을 그대로 적용한다. (psql 변수를 쓰는 role 생성 문은 제외)
+	for _, stmt := range strings.Split(seed, ";") {
+		s := stmt
+		i := strings.Index(s, "GRANT")
+		if i < 0 {
+			continue
+		}
+		s = strings.TrimSpace(s[i:])
+		if strings.Contains(s, "sensor_data ") || strings.Contains(s, "ON metric") || strings.Contains(s, "ON sensor TO") {
+			if _, err := admin.Exec(ctx, s); err != nil {
+				t.Fatalf("%s: %v", s, err)
+			}
+		}
+	}
+
+	db, err := gorm.Open(postgres.Open(fmt.Sprintf("postgres://app_worker:w@%s/go?sslmode=disable", pg.Addr)), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := workers.NewGormStore(ctx, db)
+	if err != nil {
+		t.Fatalf("NewGormStore as app_worker: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	n, err := store.InsertRows(ctx, []workers.SensorData{{Time: now, SensorID: 1, Seq: 1, TiltX: ptr(1), TiltY: ptr(2), ReceivedAt: now}})
+	if err != nil || n != 1 {
+		t.Fatalf("InsertRows as app_worker: n=%d err=%v", n, err)
+	}
+	var v float64
+	if err := db.Raw(`SELECT value FROM sensor_data LIMIT 1`).Scan(&v).Error; err == nil {
+		t.Fatal("app_worker must not read measurement values")
 	}
 }
 

@@ -348,8 +348,13 @@ func TestMigration000008BackfillOnCompressedChunks(t *testing.T) {
 	}
 	rows.Close()
 	for _, c := range chunks {
-		if _, err := conn.Exec(ctx, fmt.Sprintf(`SELECT compress_chunk('%s')`, c)); err != nil {
-			t.Fatalf("compress %s: %v", c, err)
+		if _, err := conn.Exec(ctx, fmt.Sprintf(`SELECT compress_chunk('%s', if_not_compressed => true)`, c)); err != nil {
+			// 압축 정책 잡이 같은 chunk를 동시에 압축하면 경합으로 오류가 난다. 이미 압축되어 있으면 목적은 달성된 것이다.
+			var compressed bool
+			qerr := conn.QueryRow(ctx, `SELECT is_compressed FROM timescaledb_information.chunks WHERE format('%I.%I', chunk_schema, chunk_name) = $1`, c).Scan(&compressed)
+			if qerr != nil || !compressed {
+				t.Fatalf("compress %s: %v", c, err)
+			}
 		}
 	}
 	if len(chunks) == 0 {
