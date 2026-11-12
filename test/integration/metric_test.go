@@ -294,6 +294,14 @@ func TestMigration000011RoundTrip(t *testing.T) {
 	}
 
 	restore()
+	// 000011 을 다시 올리면 metric 이 새로 만들어져 뒤 마이그레이션(000012 범위 컬럼)이 사라진다. 다시 적용한다.
+	rangeUp, err := readFile("migrations/000012_metric_range.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, rangeUp); err != nil {
+		t.Fatalf("re-apply 000012: %v", err)
+	}
 	var metrics int
 	_ = conn.QueryRow(ctx, `SELECT count(*) FROM metric`).Scan(&metrics)
 	if metrics != len(workers.KnownMetrics) {

@@ -97,6 +97,7 @@ CI는 푸시마다 vet과 위 첫 번째 명령을 실행하고, e2e는 GitHub A
 | [0010](docs/adr/0010-alert-api.md) | 경보 규칙·상태 변경 API: 별도 Go 서비스, 조직 토큰(JWKS) 인증, scope로 관리자/운영자 분리, 최소 권한 API 전용 DB role |
 | [0011](docs/adr/0011-tenant-surge-isolation.md) | 테넌트 폭주 격리: 테넌트별 구독 세션·큐 분리, topic `sensors/{tenant_id}/...`, 단일 저장 워커 유지 (구현 완료) |
 | [0012](docs/adr/0012-metric-catalog-narrow-sensor-data.md) | 측정값을 세로 구조(metric, value)로 바꾸고 단위는 metric 카탈로그에 둔다. 기존 측정 데이터 폐기 |
+| [0013](docs/adr/0013-value-range-validation.md) | 범위 밖 측정값·비정상 시각은 그 메시지만 격리하고 ack, 범위는 metric 카탈로그 컬럼에 둔다 |
 
 ## 측정 결과
 
