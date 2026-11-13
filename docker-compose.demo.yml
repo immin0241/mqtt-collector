@@ -34,7 +34,7 @@ services:
           # 개발용 시나리오 센서(201~210)는 시연 대시보드에 "unknown" 으로 섞이므로 건너뛴다.
           [ "$$(basename "$$f")" = scenario_sensors.sql ] && continue
           echo "applying $$f"
-          psql -v ON_ERROR_STOP=1 -v worker_password="$$APP_WORKER_PASSWORD" -v grafana_password="$$GRAFANA_DB_PASSWORD" -v api_password="$$API_DB_PASSWORD" -f "$$f"
+          psql -v ON_ERROR_STOP=1 -v worker_password="$$APP_WORKER_PASSWORD" -v grafana_password="$$GRAFANA_DB_PASSWORD" -v api_password="$$API_DB_PASSWORD" -v mcp_password="$$MCP_DB_PASSWORD" -f "$$f"
         done
 
   app:
