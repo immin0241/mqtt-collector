@@ -115,7 +115,27 @@ func (r Reader) Summary(ctx context.Context, w Window) (*Summary, error) {
 		silent = silent[:MaxSilentListed]
 	}
 	s.SilentSensors = silent
+	s.nonNil()
 	return s, nil
+}
+
+// nonNil은 빈 목록을 JSON 에서 null 이 아니라 []로 나오게 한다. 도구 응답을 읽는 쪽(LLM·클라이언트)이 null 과 빈 목록을 구분하지 않아도 된다.
+func (s *Summary) nonNil() {
+	if s.SensorsByStat == nil {
+		s.SensorsByStat = []Count{}
+	}
+	if s.Metrics == nil {
+		s.Metrics = []MetricStat{}
+	}
+	if s.Alerts == nil {
+		s.Alerts = []AlertCount{}
+	}
+	if s.SensorEvents == nil {
+		s.SensorEvents = []Count{}
+	}
+	if s.SilentSensors == nil {
+		s.SilentSensors = []int{}
+	}
 }
 
 type Alert struct {
