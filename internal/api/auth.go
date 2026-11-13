@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,7 +16,8 @@ import (
 // Claims는 검증이 끝난 토큰에서 API 가 쓰는 값이다.
 type Claims struct {
 	Subject string
-	OrgID   string          // 토큰의 audience 에서 꺼낸 IdP 조직 id. tenant.idp_org_id 와 대응한다.
+	OrgID   string          // 조직 토큰의 audience 에서 꺼낸 IdP 조직 id. tenant.idp_org_id 와 대응한다. API 리소스 토큰이면 빈 값이다.
+	OrgIDs  []string        // 후보 조직 id 들. 조직 토큰은 [OrgID], API 리소스 토큰은 사용자 정의 클레임의 값이다.
 	Scopes  map[string]bool // scope 클레임
 	Expiry  time.Time       // 토큰 만료 시각(exp). Verify 가 이미 만료를 거부하며, MCP 미들웨어가 값을 요구해 돌려준다.
 }
@@ -30,6 +32,19 @@ type JWTVerifier struct {
 	keyfunc   jwt.Keyfunc
 	issuer    string
 	audPrefix string
+
+	// 사용자 로그인(API 리소스) 토큰 지원. resource 가 비어 있으면 조직 토큰만 받는다.
+	resource string // 토큰 aud 에 이 값이 있으면 API 리소스 토큰으로 본다 (RFC 8707 resource indicator)
+	orgClaim string // 이 클레임(문자열 배열)에서 사용자의 조직 id 를 읽는다. IdP 의 커스텀 토큰 클레임으로 넣는다.
+}
+
+// WithResource는 API 리소스 토큰(사용자가 커넥터로 로그인해 받은 토큰)도 받는 검증기를 돌려준다.
+// 이 토큰의 aud 는 resource 이고 조직은 aud 가 아니라 orgClaim 클레임에 있다.
+// 클레임은 IdP 가 서명한 값이어야 한다(Logto: Custom JWT 스크립트). 조직 토큰 경로는 그대로 유지된다. (ADR-0014)
+func (v *JWTVerifier) WithResource(resource, orgClaim string) *JWTVerifier {
+	c := *v
+	c.resource, c.orgClaim = resource, orgClaim
+	return &c
 }
 
 // NewJWKSVerifier는 jwksURL 의 키를 주기적으로 갱신하며 토큰을 검증한다.
@@ -82,7 +97,16 @@ func (v *JWTVerifier) Verify(token string) (*Claims, error) {
 			break
 		}
 	}
-	if org == "" {
+	var orgIDs []string
+	switch {
+	case org != "":
+		orgIDs = []string{org}
+	case v.resource != "" && slices.Contains(auds, v.resource):
+		orgIDs = stringList(mc[v.orgClaim])
+		if len(orgIDs) == 0 {
+			return nil, fmt.Errorf("token has no %q organization claim", v.orgClaim)
+		}
+	default:
 		return nil, fmt.Errorf("token audience has no %q organization", v.audPrefix)
 	}
 
@@ -96,7 +120,26 @@ func (v *JWTVerifier) Verify(token string) (*Claims, error) {
 	if exp, err := mc.GetExpirationTime(); err == nil && exp != nil {
 		expiry = exp.Time
 	}
-	return &Claims{Subject: sub, OrgID: org, Scopes: scopes, Expiry: expiry}, nil
+	return &Claims{Subject: sub, OrgID: org, OrgIDs: orgIDs, Scopes: scopes, Expiry: expiry}, nil
+}
+
+// stringList는 JSON 클레임 값(문자열 또는 문자열 배열)을 문자열 목록으로 바꾼다. 다른 타입의 요소는 버린다.
+func stringList(v any) []string {
+	switch x := v.(type) {
+	case string:
+		if x != "" {
+			return []string{x}
+		}
+	case []any:
+		var out []string
+		for _, e := range x {
+			if s, ok := e.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 func bearer(r *http.Request) (string, bool) {

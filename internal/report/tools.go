@@ -25,6 +25,10 @@ const tenantKey = "tenant_id"
 // ErrNoTenant는 토큰의 조직이 tenant.idp_org_id 에 등록돼 있지 않다는 뜻이다.
 var ErrNoTenant = errors.New("organization is not a registered tenant")
 
+// ErrAmbiguousTenant는 사용자가 등록된 테넌트 둘 이상에 속해 어느 것인지 정할 수 없다는 뜻이다.
+// 임의로 하나를 고르면 사용자가 의도하지 않은 테넌트의 데이터를 보여 줄 수 있어 거부한다.
+var ErrAmbiguousTenant = errors.New("user belongs to more than one registered tenant")
+
 // TenantLookup은 IdP 조직 id 로 테넌트 id 를 찾는다.
 type TenantLookup interface {
 	TenantByOrg(ctx context.Context, orgID string) (int, error)
@@ -69,9 +73,12 @@ func (s *Service) Verifier(v api.TokenVerifier) auth.TokenVerifier {
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", auth.ErrInvalidToken, err)
 		}
-		tenantID, err := s.Tenants.TenantByOrg(ctx, c.OrgID)
-		if err != nil && !errors.Is(err, ErrNoTenant) {
+		tenantID, err := s.resolveTenant(ctx, c)
+		if err != nil && !errors.Is(err, ErrNoTenant) && !errors.Is(err, ErrAmbiguousTenant) {
 			return nil, err
+		}
+		if errors.Is(err, ErrAmbiguousTenant) && s.Log != nil {
+			s.Log.Warn("rejecting user in several tenants", "sub", c.Subject, "orgs", len(c.OrgIDs))
 		}
 		var scopes []string
 		for sc := range c.Scopes {
@@ -79,6 +86,32 @@ func (s *Service) Verifier(v api.TokenVerifier) auth.TokenVerifier {
 		}
 		return &auth.TokenInfo{Scopes: scopes, Expiration: c.Expiry, UserID: c.Subject, Extra: map[string]any{tenantKey: tenantID}}, nil
 	}
+}
+
+// resolveTenant는 토큰의 후보 조직 중 등록된 테넌트를 찾는다. 정확히 하나여야 한다.
+func (s *Service) resolveTenant(ctx context.Context, c *api.Claims) (int, error) {
+	orgs := c.OrgIDs
+	if len(orgs) == 0 && c.OrgID != "" {
+		orgs = []string{c.OrgID}
+	}
+	found := 0
+	for _, org := range orgs {
+		id, err := s.Tenants.TenantByOrg(ctx, org)
+		if errors.Is(err, ErrNoTenant) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if found != 0 && found != id {
+			return 0, ErrAmbiguousTenant
+		}
+		found = id
+	}
+	if found == 0 {
+		return 0, ErrNoTenant
+	}
+	return found, nil
 }
 
 // RequireTenant는 등록되지 않은 조직의 토큰을 403 으로 거른다. RequireBearerToken 안쪽에 둔다.
