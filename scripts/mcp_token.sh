@@ -4,7 +4,9 @@
 #
 # Logto 콘솔(http://localhost:3002)에서 먼저 할 일:
 #   1. Applications -> Create -> Machine-to-machine. App ID / Secret 을 복사한다.
-#   2. Organizations -> 대상 조직 -> Machine-to-machine 탭에서 이 앱을 추가하고, 조직 역할(read:data 가 들어 있는 역할)을 준다.
+#   2. Organizations -> 대상 조직 -> Machine-to-machine 탭에서 이 앱을 추가하고, 조직 역할(viewer 이상: read:data 가 들어 있다)을 준다. 역할이 없으면 scope 가 빈 토큰이 나온다.
+# M2M 조직 토큰은 resource 가 아니라 organization_id 파라미터로 받는다(resource=urn:logto:organization:.. 는 invalid_target).
+#   그러면 aud 가 urn:logto:organization:<id> 인 토큰이 나온다. scope 는 앱에 준 조직 역할의 권한이다.
 # scope 기본값은 read:data (Logto 기본 조직 권한). compose 의 MCP_SCOPE_REPORTS_READ 와 같아야 한다.
 # 토큰은 비밀이다. 출력된 값을 로그·이슈에 붙이지 않는다. --print 를 주면 토큰만 출력한다.
 set -euo pipefail
@@ -19,7 +21,7 @@ MCP=${MCP_URL:-http://localhost:8090/mcp}
 
 RESP=$(curl -fsS -u "$ID:$SECRET" "$LOGTO/oidc/token" \
     -d grant_type=client_credentials \
-    -d "resource=urn:logto:organization:$ORG" \
+    -d "organization_id=$ORG" \
     -d "scope=$SCOPE")
 TOKEN=$(printf '%s' "$RESP" | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
 
