@@ -449,3 +449,29 @@ func TestMCPUserTokens(t *testing.T) {
 		t.Errorf("org-b user sees %s", sb)
 	}
 }
+
+// 비어 있는 목록은 null 이 아니라 []로 나온다. 데이터가 없는 날(어제)은 지표·경보·이벤트가 모두 비고,
+// 데이터가 있는 날(오늘)은 데이터 없는 센서 목록이 빈다.
+func TestMCPSummaryEmptyListsAreArrays(t *testing.T) {
+	m := newMCPFixture(t)
+	a := m.session(t, m.token(t, "org-a", report.DefaultScope))
+	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+
+	empty, isErr := m.call(t, a, "get_daily_summary", map[string]any{"date": yesterday})
+	if isErr {
+		t.Fatalf("summary: %s", empty)
+	}
+	for _, want := range []string{`"metrics":[]`, `"alerts":[]`, `"sensor_events":[]`} {
+		if !strings.Contains(empty, want) {
+			t.Errorf("no-data day: expected %s in %s", want, empty)
+		}
+	}
+	if strings.Contains(empty, "null") {
+		t.Errorf("no-data day contains null: %s", empty)
+	}
+
+	full, _ := m.call(t, a, "get_daily_summary", map[string]any{"date": today()})
+	if !strings.Contains(full, `"sensors_without_data":[]`) || strings.Contains(full, "null") {
+		t.Errorf("data day: %s", full)
+	}
+}
