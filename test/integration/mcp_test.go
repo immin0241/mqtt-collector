@@ -28,7 +28,10 @@ import (
 	"github.com/immin0241/webframework-project-mqtt-collector/internal/testenv"
 )
 
-const mcpSecret = "test-mcp-role-secret"
+const (
+	mcpSecret   = "test-mcp-role-secret"
+	mcpResource = "http://mcp.test/mcp"
+)
 
 type mcpFixture struct {
 	api *apiFixture
@@ -120,8 +123,9 @@ func newMCPFixture(t *testing.T) *mcpFixture {
 		Loc:     time.UTC,
 		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	verifier := api.NewStaticVerifier(func(*jwt.Token) (any, error) { return &f.key.PublicKey, nil }, apiIssuer, apiAudPrefix)
-	srv := httptest.NewServer(svc.Handler(verifier, "http://mcp.test/mcp", apiIssuer, "http://mcp.test/.well-known/oauth-protected-resource", report.DefaultScope))
+	verifier := api.NewStaticVerifier(func(*jwt.Token) (any, error) { return &f.key.PublicKey, nil }, apiIssuer, apiAudPrefix).
+		WithResource(mcpResource, "organization_ids")
+	srv := httptest.NewServer(svc.Handler(verifier, mcpResource, apiIssuer, "http://mcp.test/.well-known/oauth-protected-resource", report.DefaultScope))
 	t.Cleanup(srv.Close)
 	return &mcpFixture{api: f, srv: srv}
 }
@@ -375,5 +379,73 @@ func TestMCPToolRejectsBadInput(t *testing.T) {
 		if !isErr {
 			t.Errorf("%s %v should be an error, got %s", tc.tool, tc.args, out)
 		}
+	}
+}
+
+// userToken은 커넥터로 로그인한 사용자의 토큰이다: aud 는 MCP 리소스이고 조직은 IdP 가 넣은 organization_ids 클레임에 있다.
+func (m *mcpFixture) userToken(t *testing.T, aud any, orgClaim any, scope string) string {
+	t.Helper()
+	claims := jwt.MapClaims{
+		"iss": apiIssuer, "sub": "user-42", "aud": aud, "scope": scope,
+		"exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(),
+	}
+	if orgClaim != nil {
+		claims["organization_ids"] = orgClaim
+	}
+	s, err := jwt.NewWithClaims(jwt.SigningMethodES256, claims).SignedString(m.api.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// 사용자 로그인 토큰(API 리소스)으로도 같은 격리가 성립한다. 테넌트는 organization_ids 클레임에서만 정해지고,
+// 등록된 테넌트가 정확히 하나일 때만 허용한다.
+func TestMCPUserTokens(t *testing.T) {
+	m := newMCPFixture(t)
+	status := func(token string) int {
+		req, _ := http.NewRequest(http.MethodPost, m.srv.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for _, tc := range []struct {
+		name  string
+		token string
+		want  int
+	}{
+		{"one registered org", m.userToken(t, mcpResource, []string{"org-a"}, report.DefaultScope), http.StatusOK},
+		{"claim as plain string", m.userToken(t, mcpResource, "org-a", report.DefaultScope), http.StatusOK},
+		{"unregistered orgs are ignored", m.userToken(t, mcpResource, []string{"org-zzz", "org-b"}, report.DefaultScope), http.StatusOK},
+		{"aud list containing the resource", m.userToken(t, []string{"http://other/api", mcpResource}, []string{"org-a"}, report.DefaultScope), http.StatusOK},
+		{"two registered tenants are ambiguous", m.userToken(t, mcpResource, []string{"org-a", "org-b"}, report.DefaultScope), http.StatusForbidden},
+		{"only unregistered orgs", m.userToken(t, mcpResource, []string{"org-zzz"}, report.DefaultScope), http.StatusForbidden},
+		{"missing scope", m.userToken(t, mcpResource, []string{"org-a"}, "openid"), http.StatusForbidden},
+		{"no org claim", m.userToken(t, mcpResource, nil, report.DefaultScope), http.StatusUnauthorized},
+		{"empty org claim", m.userToken(t, mcpResource, []string{}, report.DefaultScope), http.StatusUnauthorized},
+		{"claim of wrong type", m.userToken(t, mcpResource, map[string]any{"a": 1}, report.DefaultScope), http.StatusUnauthorized},
+		{"aud is another API", m.userToken(t, "http://other/api", []string{"org-a"}, report.DefaultScope), http.StatusUnauthorized},
+	} {
+		if got := status(tc.token); got != tc.want {
+			t.Errorf("%s: status %d, want %d", tc.name, got, tc.want)
+		}
+	}
+
+	// 데이터는 클레임의 조직에 해당하는 테넌트 것만 나온다
+	a := m.session(t, m.userToken(t, mcpResource, []string{"org-a"}, report.DefaultScope))
+	b := m.session(t, m.userToken(t, mcpResource, []string{"org-b"}, report.DefaultScope))
+	sa, _ := m.call(t, a, "get_sensor_status", nil)
+	sb, _ := m.call(t, b, "get_sensor_status", nil)
+	if !strings.Contains(sa, `"sensor_id":1`) || strings.Contains(sa, `"sensor_id":3`) {
+		t.Errorf("org-a user sees %s", sa)
+	}
+	if !strings.Contains(sb, `"sensor_id":3`) || strings.Contains(sb, `"sensor_id":1`) {
+		t.Errorf("org-b user sees %s", sb)
 	}
 }

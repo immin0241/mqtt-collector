@@ -73,10 +73,12 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	verifier, err := api.NewJWKSVerifier(ctx, jwksURL, issuer, env("MCP_AUDIENCE_PREFIX", "urn:logto:organization:"))
+	jwks, err := api.NewJWKSVerifier(ctx, jwksURL, issuer, env("MCP_AUDIENCE_PREFIX", "urn:logto:organization:"))
 	if err != nil {
 		return err
 	}
+	// 조직 토큰(M2M 등)에 더해, 커넥터로 로그인한 사용자의 토큰(aud = MCP 리소스, 조직은 커스텀 클레임)도 받는다. (ADR-0014)
+	verifier := jwks.WithResource(resource, env("MCP_ORG_CLAIM", "organization_ids"))
 
 	pools := &report.Pools{
 		Host: dbHost, Port: env("MCP_DB_PORT", "5432"), DBName: env("MCP_DB_NAME", "go"), SSLMode: env("MCP_DB_SSLMODE", "disable"),
