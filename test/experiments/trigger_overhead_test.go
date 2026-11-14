@@ -39,6 +39,17 @@ func TestTriggerOverhead(t *testing.T) {
 		t.Fatal(err)
 	}
 	sensors := tenants * perTenant
+	var metricIDs []int16
+	mr, err := conn.Query(ctx, `SELECT id FROM metric WHERE name IN ('tilt_x', 'tilt_y') ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for mr.Next() {
+		var id int16
+		_ = mr.Scan(&id)
+		metricIDs = append(metricIDs, id)
+	}
+	mr.Close()
 
 	run := func(withTrigger bool, base int) time.Duration {
 		sql := "ALTER TABLE sensor_data DISABLE TRIGGER sensor_data_set_tenant"
@@ -51,18 +62,23 @@ func TestTriggerOverhead(t *testing.T) {
 		start := time.Now()
 		for b := 0; b < batches; b++ {
 			var sb strings.Builder
-			args := make([]any, 0, batch*7)
-			sb.WriteString("INSERT INTO sensor_data (time, tenant_id, sensor_id, seq, crack_width, temperature, received_at) VALUES ")
+			args := make([]any, 0, batch*len(metricIDs)*7)
+			sb.WriteString("INSERT INTO sensor_data (time, tenant_id, sensor_id, seq, metric_id, value, received_at) VALUES ")
+			first := true
 			for i := 0; i < batch; i++ {
-				if i > 0 {
-					sb.WriteByte(',')
-				}
 				sid := (i*7+b)%sensors + 1
 				tid := (sid-1)/perTenant + 1
 				seq := int64(base + b*batch + i)
-				n := len(args)
-				args = append(args, time.Now().Add(-time.Duration(seq)*time.Millisecond), tid, sid, seq, 1.5, 20.0, time.Now())
-				fmt.Fprintf(&sb, "($%d,$%d,$%d,$%d,$%d,$%d,$%d)", n+1, n+2, n+3, n+4, n+5, n+6, n+7)
+				ts := time.Now().Add(-time.Duration(seq) * time.Millisecond)
+				for _, mid := range metricIDs { // 메시지당 측정 행 2개 (세로 구조, ADR-0012)
+					if !first {
+						sb.WriteByte(',')
+					}
+					first = false
+					n := len(args)
+					args = append(args, ts, tid, sid, seq, mid, 1.5, time.Now())
+					fmt.Fprintf(&sb, "($%d,$%d,$%d,$%d,$%d,$%d,$%d)", n+1, n+2, n+3, n+4, n+5, n+6, n+7)
+				}
 			}
 			sb.WriteString(" ON CONFLICT DO NOTHING")
 			if _, err := conn.Exec(ctx, sb.String(), args...); err != nil {
@@ -83,9 +99,9 @@ func TestTriggerOverhead(t *testing.T) {
 			on = append(on, run(true, base+batches*batch))
 		}
 	}
-	rows := float64(batches * batch)
+	rows := float64(batches * batch * len(metricIDs))
 	var out strings.Builder
-	fmt.Fprintf(&out, "조건: 센서 %d(테넌트 %d), 회당 %d행 = %d배치 x %d행 multi-row INSERT ON CONFLICT DO NOTHING, 단일 연결(superuser), %d회 반복 중앙값, 트리거 on/off 번갈아\n", sensors, tenants, int(rows), batches, batch, reps)
+	fmt.Fprintf(&out, "조건: 센서 %d(테넌트 %d), 회당 %d행 = %d배치 x %d메시지(메시지당 2행) multi-row INSERT ON CONFLICT DO NOTHING, 단일 연결(superuser), %d회 반복 중앙값, 트리거 on/off 번갈아\n", sensors, tenants, int(rows), batches, batch, reps)
 	fmt.Fprintf(&out, "- 트리거 on : %.0f rows/s (중앙값 %s)\n", rows/median(on).Seconds(), median(on).Round(time.Millisecond))
 	fmt.Fprintf(&out, "- 트리거 off: %.0f rows/s (중앙값 %s)\n", rows/median(off).Seconds(), median(off).Round(time.Millisecond))
 	fmt.Fprintf(&out, "- 트리거 오버헤드: %.1f%%\n", (float64(median(on))/float64(median(off))-1)*100)
