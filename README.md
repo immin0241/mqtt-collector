@@ -130,6 +130,7 @@ CI는 푸시마다 vet과 위 첫 번째 명령을 실행하고, e2e는 GitHub A
 - 발행 측 버퍼링과 발행 로그는 시나리오 실행기에만 있다. FastAPI 데모 서버는 브로커 단절 중 생성분을 버퍼링하지 않는다.
 - TC-06 5분 조건은 `max_queued_messages 200000`에서만 통과한다. 부족분이 큐보다 길면 다시 유실된다(큐 상향은 유실 시점을 늦출 뿐, 쓰기 경로 개선은 [phase7-insert-strategies](docs/experiments/phase7-insert-strategies.md)에 후보만 있고 미적용). 큐가 찬 세션 하나의 브로커 메모리는 약 130 MiB.
 - 범위 밖 값·비정상 시각 검증은 ADR-0013으로 해결했다(격리 테이블로 보내고 ack).
+- TC-19(집계·압축, [phase7-aggregates-compression](docs/experiments/phase7-aggregates-compression.md)): 1,450만 행에서 압축으로 저장 용량 3.9배 감소, 전 센서 통계는 1분 집계가 원본보다 약 6배 빠르다(압축 후 1.8~2.9배). 보존 정책·집계 압축은 미측정이고 조회 시간 이상값 2건은 원인을 확인하지 못했다.
 - MCP 리포트 서버(ADR-0014): 격리·인증 거부·읽기 전용은 자체 서명 토큰으로 통합 테스트했다. 실제 Logto 로그인(M2M 조직 토큰, Claude Code PKCE, 두 테넌트 사용자)은 Claude Code 에서 확인했다. **Claude Desktop/claude.ai 커넥터는 공개 HTTPS가 필요한데 스택은 평문 HTTP라 시험하지 못했다.** 리포트 품질은 평가하지 않았다. 스킬은 `skills/daily-report/SKILL.md`, 설치 방법은 [docs/claude-desktop-install.md](docs/claude-desktop-install.md).
 - 센서 상태/경보(ADR-0008): 정상 범위·flatline 횟수는 센서 종류와 무관한 전역 기본값이다. 경보 큐가 차면 경보를 버린다(`alerts_dropped_total`).
   DB 중단 중 센서 상태가 바뀌지 않는지는 단위 테스트(Requeue)로만 확인했고 e2e로는 확인하지 않았다. 경보 규칙을 등록하는 API는 Phase 6이며 지금은 SQL로 넣는다.
