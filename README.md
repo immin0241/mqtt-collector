@@ -102,6 +102,8 @@ CI는 푸시마다 vet과 위 첫 번째 명령을 실행하고, e2e는 GitHub A
 
 ## 측정 결과
 
+성능 지표(처리량·지연·메모리·조회·저장 효율)를 조건과 함께 모은 표는 [docs/performance-summary.md](docs/performance-summary.md)에 있다. 아래 표는 TC별 정합성 판정이다.
+
 > 조건이 다른 두 묶음이다. **자동 테스트**(Phase 3)는 Docker 컨테이너(TimescaleDB pg18, Mosquitto 2)와 프로세스 내 장애 프록시로 재현 가능하게 실행한 1회 결과이고,
 > **수동 실험**(Phase 1)은 센서 3개, 합계 약 3 msg/s의 저부하 결과다. 환경은 WSL2 단일 호스트(Docker 29.8.0), 배치 300건 / flush 2초(통합 테스트는 200ms)다.
 > 상세 조건은 [docs/notes/phase3-test-infra.md](docs/notes/phase3-test-infra.md), [docs/experiments/phase1-tc02-03-04.md](docs/experiments/phase1-tc02-03-04.md),
