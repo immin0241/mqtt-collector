@@ -1,5 +1,7 @@
 # MCP 서버와 Logto 설정 (사용자 로그인: Claude Code 커넥터)
 
+Claude Desktop 에 설치하는 방법은 [claude-desktop-install.md](claude-desktop-install.md) 를 본다.
+
 ADR-0014의 "사용자 로그인 토큰" 경로를 쓰기 위한 Logto 콘솔 작업이다. 서버 쪽은 `MCP_RESOURCE_URL`과 `MCP_ORG_CLAIM`만 맞으면 된다.
 
 ## 왜 필요한가
