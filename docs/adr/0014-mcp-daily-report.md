@@ -43,6 +43,7 @@
 | `list_alerts` | `date`, `status?`, `limit?`(≤100) | 경보 목록 |
 | `get_sensor_status` | 없음 | 센서별 상태·마지막 수신 |
 | `get_metric_trend` | `sensor_id`, `metric`, `date` | 1시간 단위 24점(평균·최소·최대·건수) |
+| `whoami` (2026-11-16 추가) | 없음 | 테넌트 id, 매칭된 조직 id, 사용자 id(sub), scope, 토큰 만료, 토큰의 후보 조직 수, 이 테넌트 role에 보이는 센서 수. 검증된 토큰과 테넌트 role의 뷰에서만 만들고, 다른 테넌트의 값은 내지 않는다. DB 권한 변경 없음 |
 
 - SQL 도구와 쓰기 도구는 없다. 입력은 서버에서 검증한다(날짜 형식·범위, `metric`은 카탈로그에 있는 이름만, `limit` 상한).
 - 날짜 구간은 `MCP_REPORT_TZ`(기본 `Asia/Seoul`)의 하루다. 테넌트별 시간대 컬럼이 없어 전역 설정이다.

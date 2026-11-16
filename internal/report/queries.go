@@ -182,6 +182,13 @@ func (r Reader) Sensors(ctx context.Context) ([]SensorState, error) {
 	return out, err
 }
 
+// SensorCount는 이 테넌트 role 에 보이는 센서 수다. whoami 가 격리 상태를 확인하는 용도로 쓴다.
+func (r Reader) SensorCount(ctx context.Context) (int64, error) {
+	var n int64
+	err := r.DB.WithContext(ctx).Raw(`SELECT count(*) FROM v_sensor`).Scan(&n).Error
+	return n, err
+}
+
 type TrendPoint struct {
 	Hour  time.Time `json:"hour"`
 	Count int64     `json:"sample_count"`
