@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
@@ -21,6 +22,12 @@ const DefaultScope = "reports:read"
 
 // tenantKey는 TokenInfo.Extra 에 담는 테넌트 id 의 키다. 도구 인자에서는 테넌트를 받지 않는다.
 const tenantKey = "tenant_id"
+
+// orgKey 와 orgsKey 는 whoami 용이다. 매칭된 조직 id 와, 토큰이 담고 있던 후보 조직 id 목록(응답에는 개수만 낸다).
+const (
+	orgKey  = "organization_id"
+	orgsKey = "orgs_in_token"
+)
 
 // ErrNoTenant는 토큰의 조직이 tenant.idp_org_id 에 등록돼 있지 않다는 뜻이다.
 var ErrNoTenant = errors.New("organization is not a registered tenant")
@@ -73,7 +80,7 @@ func (s *Service) Verifier(v api.TokenVerifier) auth.TokenVerifier {
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", auth.ErrInvalidToken, err)
 		}
-		tenantID, err := s.resolveTenant(ctx, c)
+		tenantID, orgID, err := s.resolveTenant(ctx, c)
 		if err != nil && !errors.Is(err, ErrNoTenant) && !errors.Is(err, ErrAmbiguousTenant) {
 			return nil, err
 		}
@@ -84,34 +91,41 @@ func (s *Service) Verifier(v api.TokenVerifier) auth.TokenVerifier {
 		for sc := range c.Scopes {
 			scopes = append(scopes, sc)
 		}
-		return &auth.TokenInfo{Scopes: scopes, Expiration: c.Expiry, UserID: c.Subject, Extra: map[string]any{tenantKey: tenantID}}, nil
+		sort.Strings(scopes)
+		return &auth.TokenInfo{Scopes: scopes, Expiration: c.Expiry, UserID: c.Subject,
+			Extra: map[string]any{tenantKey: tenantID, orgKey: orgID, orgsKey: candidateOrgs(c)}}, nil
 	}
 }
 
-// resolveTenant는 토큰의 후보 조직 중 등록된 테넌트를 찾는다. 정확히 하나여야 한다.
-func (s *Service) resolveTenant(ctx context.Context, c *api.Claims) (int, error) {
-	orgs := c.OrgIDs
-	if len(orgs) == 0 && c.OrgID != "" {
-		orgs = []string{c.OrgID}
+// candidateOrgs는 토큰이 담은 후보 조직 id 들이다. 조직 토큰은 하나, API 리소스 토큰은 사용자 정의 클레임의 값이다.
+func candidateOrgs(c *api.Claims) []string {
+	if len(c.OrgIDs) == 0 && c.OrgID != "" {
+		return []string{c.OrgID}
 	}
-	found := 0
-	for _, org := range orgs {
+	return c.OrgIDs
+}
+
+// resolveTenant는 토큰의 후보 조직 중 등록된 테넌트를 찾는다. 정확히 하나여야 한다.
+// 테넌트 id 와 함께 매칭된 조직 id 를 돌려준다(whoami).
+func (s *Service) resolveTenant(ctx context.Context, c *api.Claims) (int, string, error) {
+	found, foundOrg := 0, ""
+	for _, org := range candidateOrgs(c) {
 		id, err := s.Tenants.TenantByOrg(ctx, org)
 		if errors.Is(err, ErrNoTenant) {
 			continue
 		}
 		if err != nil {
-			return 0, err
+			return 0, "", err
 		}
 		if found != 0 && found != id {
-			return 0, ErrAmbiguousTenant
+			return 0, "", ErrAmbiguousTenant
 		}
-		found = id
+		found, foundOrg = id, org
 	}
 	if found == 0 {
-		return 0, ErrNoTenant
+		return 0, "", ErrNoTenant
 	}
-	return found, nil
+	return found, foundOrg, nil
 }
 
 // RequireTenant는 등록되지 않은 조직의 토큰을 403 으로 거른다. RequireBearerToken 안쪽에 둔다.
@@ -171,6 +185,18 @@ type alertsOut struct {
 }
 
 type sensorsIn struct{}
+
+type whoamiIn struct{}
+
+type whoamiOut struct {
+	TenantID       int       `json:"tenant_id"`
+	OrganizationID string    `json:"organization_id" jsonschema:"IdP organization id that matched a registered tenant"`
+	Subject        string    `json:"subject" jsonschema:"IdP user id (token sub)"`
+	Scopes         []string  `json:"scopes"`
+	ExpiresAt      time.Time `json:"token_expires_at"`
+	OrgsInToken    int       `json:"organizations_in_token" jsonschema:"candidate organizations the token carried (unregistered ones are ignored)"`
+	SensorCount    int64     `json:"sensor_count" jsonschema:"sensors visible to this tenant"`
+}
 
 type sensorsOut struct {
 	Sensors []SensorState `json:"sensors"`
@@ -274,6 +300,37 @@ func (s *Service) NewServer() *mcp.Server {
 			p = []TrendPoint{}
 		}
 		return nil, &trendOut{Window: w, Points: p}, nil
+	})
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "whoami",
+		Description: "Which user and tenant the current login maps to: tenant id, matched organization id, user id, granted scopes, " +
+			"token expiry and the number of sensors visible to this tenant. Takes no arguments and only reports what the verified token contains.",
+		Annotations: ro,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ whoamiIn) (*mcp.CallToolResult, *whoamiOut, error) {
+		ti := auth.TokenInfoFromContext(ctx)
+		id, ok := tenantFrom(ctx)
+		if ti == nil || !ok || id == 0 {
+			return nil, nil, ErrNoTenant
+		}
+		r, err := s.reader(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		n, err := r.SensorCount(ctx)
+		if err != nil {
+			return nil, nil, s.wrap("whoami", err)
+		}
+		org, _ := ti.Extra[orgKey].(string)
+		orgs, _ := ti.Extra[orgsKey].([]string)
+		scopes := ti.Scopes
+		if scopes == nil {
+			scopes = []string{}
+		}
+		return nil, &whoamiOut{
+			TenantID: id, OrganizationID: org, Subject: ti.UserID, Scopes: scopes,
+			ExpiresAt: ti.Expiration.UTC(), OrgsInToken: len(orgs), SensorCount: n,
+		}, nil
 	})
 	return srv
 }

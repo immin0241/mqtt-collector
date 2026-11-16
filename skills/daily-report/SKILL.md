@@ -18,6 +18,9 @@ signed-in user's tenant. Do not try to reach other tenants, and do not guess dat
 5. For at most three sensors that look abnormal (alerts, offline, no data, or extreme min/max), call `get_metric_trend`
    for the metric involved. Do not call it for every sensor.
 
+If the user asks which account or tenant they are signed in as, call `whoami` and report its `tenant_id`, `organization_id`,
+`subject` and `sensor_count`. It is not part of the report itself, so do not call it for a normal daily report.
+
 ## Report format
 
 Write in the user's language. Keep it to one screen:
