@@ -2,152 +2,104 @@
 
 [![CI](https://github.com/immin0241/webframework-project-mqtt-collector/actions/workflows/ci.yml/badge.svg)](https://github.com/immin0241/webframework-project-mqtt-collector/actions/workflows/ci.yml)
 
-마포구 「AI 스마트 IoT 계측센서 관리시스템」 RFP를 기반으로 한 IoT 계측 데이터 수집 플랫폼이다.
-센서(기울기·균열·환경) 데이터를 MQTT로 받아 TimescaleDB에 **유실·중복 없이** 저장하는 것이 핵심이며,
-"동작한다"보다 **"장애에서도 정합성을 증명한다"** 가 목표다. AI 기능은 이후 단계에서 붙인다.
+## 개요
+
+교량·건물 같은 시설물에 설치한 IoT 계측센서(기울기·균열·환경)의 데이터를 MQTT로 받아 시계열 DB에 저장하고,
+센서 상태 판정·경보·테넌트별 관제까지 제공하는 **계측 데이터 수집 플랫폼**이다.
+마포구 「AI 스마트 IoT 계측센서 관리시스템」 RFP를 바탕으로 한 포트폴리오 프로젝트다.
+
+핵심 목표는 "동작한다"가 아니라 **"장애에서도 데이터가 유실·중복되지 않음을 증명한다"** 이다.
+DB 중단, 브로커 중지, 프로세스 강제 종료, 과부하 같은 장애를 일부러 일으키고, 발행한 메시지와 저장된 행을 대조해 결과를 숫자로 남긴다.
+
+주요 기능
+
+- **무손실 수집:** 메시지가 DB에 커밋된 뒤에만 ack한다. 일시적 DB 오류는 재시도하고, 그동안 수신은 백프레셔로 막는다. 형식·범위 오류 행은 격리 테이블로 보내 정상 데이터는 계속 저장한다.
+- **센서 상태·경보:** 수신 시점 기준으로 통신 두절·고장(flatline, 범위 밖 반복)을 판정하고, 임계치·변화율 규칙으로 경보를 만든다.
+- **멀티테넌시:** 테넌트별 데이터 격리(DB role·뷰), 테넌트별 구독 세션으로 한 테넌트의 폭주가 다른 테넌트에 번지지 않게 한다.
+- **관제:** Grafana 대시보드(수집 경로, 시설물·센서 상태, 경보), 경보 규칙·상태 변경 API, 일일 리포트 MCP 서버.
+- **재현 가능한 검증:** 결정론적 센서 에뮬레이터, 발행 로그와 DB를 대조하는 도구, 장애 주입 자동 테스트.
 
 ## 아키텍처
 
 ```
-mqtt_emulator ──QoS1──▶ Mosquitto ──▶ SensorCollectionWorker ──chan(600)──▶ DbPushWorker ──batch(300/2s)──▶ TimescaleDB
- (Python)                             (구독·파싱·received_at)                (재시도·격리·ack)               sensor_data
-                                                                                  │                          sensor_data_rejected
-                                                                                  └──▶ /metrics ──▶ Prometheus ──▶ Grafana
+센서 에뮬레이터 ──QoS1──▶ Mosquitto ──▶ 수집 워커 ──채널(600)──▶ 저장 워커 ──배치(300건/2초)──▶ TimescaleDB
+(Python)                  (지속 세션)   (구독·파싱·      (단일 고루틴, 재시도·         (하이퍼테이블, 연속 집계,
+                                         received_at)    격리·커밋 후 ack)             압축, 격리 테이블)
+                                             │                  │
+                                             └─ 센서 상태·경보 ─┘      └──▶ /metrics ──▶ Prometheus ──▶ Grafana
+                                                                                         (Logto OIDC 로그인, 테넌트별 org)
+                                                                          경보 API · MCP 서버 ──▶ TimescaleDB (최소 권한 role)
 ```
 
-- 배치 flush: 건수(300) 도달 또는 배치 첫 메시지 이후 2초 경과.
-- 중복 판정: `UNIQUE (sensor_id, seq, time)` + `ON CONFLICT DO NOTHING`.
-- **ack는 DB 커밋(또는 격리 기록) 뒤에만** 보낸다. 일시적 DB 오류는 재시도하며 그동안 수신은 백프레셔로 막힌다.
-  데이터 오류 행은 이분법으로 찾아 `sensor_data_rejected`로 격리한다.
+설계 원칙
 
-## 실행 방법
+1. **ack는 DB 커밋 뒤에만** 보낸다. 커밋 전에 ack하는 경로는 없다.
+2. **일시적 오류로 배치를 버리지 않는다.** 지수 백오프로 재시도하고, 채널이 차면 수신을 멈춘다.
+3. **오류 행 하나가 배치 전체를 막지 않는다.** 이분법으로 문제 행만 격리 테이블에 저장한다.
+4. **메모리는 상한이 있다.** 채널·배치 크기는 고정이다.
+5. **저장 워커는 단일 고루틴**이라 ack 순서가 수신 순서와 같다.
+6. **중복은 DB가 제거한다.** `UNIQUE (sensor_id, seq, time)` + `ON CONFLICT DO NOTHING`이라 QoS 1의 재전달에도 한 건만 남는다.
 
-요구 사항: Docker Compose v2. (선택) Go 1.27, [golang-migrate](https://github.com/golang-migrate/migrate) CLI.
+세부 결정과 근거는 `docs/adr/`의 설계 결정 기록(ADR)에 있다.
 
-```bash
-cp .env.example .env
-docker compose up -d --build init broker1 postgres migrate seed app emulator prometheus
-```
+## 기술 스택
 
-`migrate`가 `migrations/`를 적용하고 `seed`가 `seeds/`(워커 DB role, 개발 센서 101~103)를 적용한 뒤에 `app`이 뜬다.
-
-에뮬레이터는 시작 직후 센서가 없으므로 설정을 한 번 넣는다:
-
-```bash
-curl -X PUT localhost:8000/config -H 'Content-Type: application/json' -d '{
-  "sensors": [{"id":101,"sensor_type":"tilt"},{"id":102,"sensor_type":"crack"},{"id":103,"sensor_type":"env"}],
-  "interval_seconds": 1.0, "jitter_fraction": 0.1, "topic_prefix": "sensors", "qos": 1 }'
-```
-
-| 확인할 것 | 주소 |
+| 영역 | 사용 기술 |
 | --- | --- |
-| 앱 지표 | 컨테이너 내부 `app:9090/metrics` (호스트에 공개하지 않음) |
-| Prometheus | http://localhost:9091 |
-| Grafana (수집 경로 대시보드 `ingest-path`) | http://localhost:3000 (기본 admin / admin) — 먼저 `docker compose up -d grafana` |
-| 에뮬레이터 API | http://localhost:8000 (`/config`, `/stats`, `/sensors`) |
+| 수집·저장 워커, API, MCP 서버 | Go 1.27, paho.mqtt.golang(수동 ack, 지속 세션), pgx/GORM, Prometheus client |
+| 메시지 브로커 | Eclipse Mosquitto 2 (QoS 1, 지속 세션, inflight·queue 튜닝) |
+| 데이터베이스 | TimescaleDB (PostgreSQL 18): 하이퍼테이블, 연속 집계, 압축 |
+| 센서 에뮬레이터 | Python 3.12, FastAPI, aiomqtt, Pydantic, uv |
+| 관측·관제 | Prometheus, Grafana, Logto(OIDC) |
+| 테스트·검증 | testcontainers-go 통합 테스트, 장애 주입 e2e(프로세스 내 프록시), 발행 로그↔DB 대조 도구 |
+| 인프라·CI | Docker Compose, golang-migrate, GitHub Actions |
 
-Grafana와 Logto(OIDC) 설정은 [docs/logto-grafana-setup.md](docs/logto-grafana-setup.md)를 따른다.
+## 핵심 측정 결과
 
-### 정합성 대조 (reconcile)
+> 장비: AMD Ryzen 5 7500F(6코어 12스레드), RAM 15.8 GB, **WSL2 위의 Docker 단일 호스트**. 브로커·DB·앱·부하 발생기가 같은 머신을 나눠 쓴다.
+> 대부분 1회 실행으로 경향과 자릿수를 보는 용도이며 운영 환경 수치가 아니다.
+> 기본 설정은 배치 300건, flush 2초, 채널 600, 브로커 `max_inflight_messages 600`이다. 메시지 하나는 측정 행 2개로 저장된다(msg/s와 rows/s는 2배 차이).
 
-```bash
-export POSTGRESQL_URL='postgres://go:go@localhost:5432/go?sslmode=disable'
-go run ./tools/reconcile --since 2026-10-23T01:00:00Z                       # 저장된 seq의 min~max를 기대로 삼음
-go run ./tools/reconcile --published run.jsonl --since 2026-10-23T01:00:00Z # 발행 로그와 정확히 대조
-```
+### 장애에서의 정합성
 
-발행 로그는 JSONL이고 한 줄이 `{"sensor_id": 101, "seq": 42}` 이다. 시나리오 실행기(`mqtt_emulator/run_scenario.py`)가 PUBACK 받은 전송마다 남긴다.
-로그 없이 실행하면 저장된 seq의 min~max를 기대로 삼는 모드(꼬리 쪽 유실은 찾지 못함)로 동작한다. 누락, 예상 외, DB 중복이 하나라도 있으면 종료 코드 1을 돌려준다.
-격리된 행은 누락이 아니라 `rejected`로 센다.
+| 시나리오 | 조건 | 결과 |
+| --- | --- | --- |
+| 정상 수집 | 센서 10 × 1,000건 | 10,000건 저장, 누락·중복 0 |
+| DB 10초 중단 | 500 msg/s | 누락·중복 0, 채널 깊이 최대 317(상한 600), 힙 4→7 MiB |
+| 브로커 10초 중지 | 재연결·재구독 | 누락·중복 0 |
+| 프로세스 SIGKILL | 500 msg/s, 3초 뒤 재시작 | 누락·중복 0 |
+| 정상 종료(SIGTERM) 후 재시작 | 센서당 700건 | 전부 저장 |
+| 같은 이벤트 3회 전송 | | DB 1건, 중복 제거 지표 +2 |
+| 부하 + DB 지연 | 970 msg/s 5분, DB 왕복 지연 200 ms, 큐 200,000 | 291,076건 누락·중복 0, 힙 4→60 MiB |
+| 테넌트 폭주 | 한 테넌트 150,000건 발행 | 다른 테넌트 유실 0, 저장 지연 p95 약 150 ms |
 
-### 테스트
+### 처리량
 
-```bash
-go test -race ./...                 # 단위 + 통합(testcontainers: TimescaleDB, Mosquitto; Docker 필요, 없으면 건너뜀)
-go test -tags e2e ./test/e2e -v     # 장애 주입: TC-02(DB 차단), 03(브로커 중지), 04(SIGKILL), 06(부하+DB 지연)
-```
-
-통합 테스트는 TC-01·05·07·08·09(DB 계층)·12·13·16과 재시작 시 센서 상태, e2e는 TC-02·03·04·06을 코드로 재현하며 판정은 `tools/reconcile`과 같은 `internal/reconcile`을 쓴다.
-구성, 측정 조건·결과, Toxiproxy 대신 프로세스 내 프록시를 쓴 이유는 [docs/notes/phase3-test-infra.md](docs/notes/phase3-test-infra.md)에 있다.
-CI는 푸시마다 vet과 위 첫 번째 명령을 실행하고, e2e는 GitHub Actions에서 수동으로 실행한다.
-
-### 주요 환경 변수
-
-| 변수 | 설명 |
+| 지표 | 값 |
 | --- | --- |
-| `MQTT_BROKER`, `MQTT_USERNAME`, `MQTT_PASSWORD` | 브로커 주소와 계정 |
-| `MQTT_CLIENT_ID` | **필수.** 지속 세션 식별자. 인스턴스마다 고유하고 재시작해도 같아야 한다 |
-| `DATABASE_URL` | 워커 DB 접속 (role `app_worker`) |
-| `METRICS_ADDR` | 지표 서버 주소 (기본 `:9090`) |
-| `FLUSH_INTERVAL` | 배치 flush 주기 (기본 `2s`) |
+| 저장 처리량 상한 (DB 지연 없음) | 약 5,650~6,250 msg/s (11,300~12,500 rows/s), 목표 1,000 msg/s의 5~6배 |
+| 배치(300건) 커밋 시간 | p50 52.5 ms / p95 59.5 ms |
+| DB 왕복 지연 20 ms/방향 | 1,508 msg/s로 하락. 왕복 1회 방식(`unnest`)은 2,631 msg/s(1.7배) |
+| COPY, 배치 확대(300→3,000) | 이득 없음 (한계는 인덱스·트리거 삽입 비용) |
 
-## 설계 결정 (ADR)
+### 지연
 
-| ADR | 결정 |
+| 지표 | 값 |
 | --- | --- |
-| [0001](docs/adr/0001-ack-timing.md) | 수동 ack, 배치 커밋 뒤 일괄 ack |
-| [0002](docs/adr/0002-retry-and-backpressure.md) | 일시적 오류는 무한 지수 백오프 재시도, 채널 포화 시 수신 정지 |
-| [0003](docs/adr/0003-error-classification-and-quarantine.md) | SQLSTATE 22/23은 영구 오류, 이분법으로 문제 행만 격리 |
-| [0004](docs/adr/0004-broker-inflight-and-queue.md) | `max_inflight_messages 600`, `max_queued_messages 200000` (TC-06 5분 조건 때문에 60000에서 상향, 세션당 최악 ~130 MiB) |
-| [0005](docs/adr/0005-keep-gorm.md) | gorm 유지, pgx 오류 코드로 분류 |
-| [0006](docs/adr/0006-sensor-data-tenant-id-removal.md) | `sensor_data.tenant_id` 제거 이력 |
-| [0007](docs/adr/0007-shutdown-keeps-subscription.md) | 정상 종료 시 구독을 해제하지 않는다 (TC-16) |
-| [0008](docs/adr/0008-sensor-state-and-alerts.md) | 센서 상태(online/offline/faulty)와 경보를 수신 시점 메모리에서 평가, edge trigger |
-| [0009](docs/adr/0009-tenant-isolation.md) | 테넌트 격리: role→테넌트 매핑 뷰(세션 설정 우회 차단), `sensor_data.tenant_id` 재도입 (0006 대체) |
-| [0010](docs/adr/0010-alert-api.md) | 경보 규칙·상태 변경 API: 별도 Go 서비스, 조직 토큰(JWKS) 인증, scope로 관리자/운영자 분리, 최소 권한 API 전용 DB role |
-| [0011](docs/adr/0011-tenant-surge-isolation.md) | 테넌트 폭주 격리: 테넌트별 구독 세션·큐 분리, topic `sensors/{tenant_id}/...`, 단일 저장 워커 유지 (구현 완료) |
-| [0012](docs/adr/0012-metric-catalog-narrow-sensor-data.md) | 측정값을 세로 구조(metric, value)로 바꾸고 단위는 metric 카탈로그에 둔다. 기존 측정 데이터 폐기 |
-| [0013](docs/adr/0013-value-range-validation.md) | 범위 밖 측정값·비정상 시각은 그 메시지만 격리하고 ack, 범위는 metric 카탈로그 컬럼에 둔다 |
-| [0014](docs/adr/0014-mcp-daily-report.md) | 테넌트 일일 리포트 MCP 서버: 읽기 전용 도구, Logto 조직 토큰, 테넌트별 DB role(격리는 DB가 보장) |
+| 수집 지연 p99 (저부하 약 3 msg/s) | 약 2.9 s (flush 주기 2초가 지배) |
+| 폭주 중 다른 테넌트의 저장 지연 | p50 127 ms / p95 148 ms / max 180 ms |
 
-## 측정 결과
+### 저장·조회 효율 (TimescaleDB, 합성 데이터 1,450만 행)
 
-성능 지표(처리량·지연·메모리·조회·저장 효율)를 조건과 함께 모은 표는 [docs/performance-summary.md](docs/performance-summary.md)에 있다. 아래 표는 TC별 정합성 판정이다.
-
-> 조건이 다른 두 묶음이다. **자동 테스트**(Phase 3)는 Docker 컨테이너(TimescaleDB pg18, Mosquitto 2)와 프로세스 내 장애 프록시로 재현 가능하게 실행한 1회 결과이고,
-> **수동 실험**(Phase 1)은 센서 3개, 합계 약 3 msg/s의 저부하 결과다. 환경은 WSL2 단일 호스트(Docker 29.8.0), 배치 300건 / flush 2초(통합 테스트는 200ms)다.
-> 상세 조건은 [docs/notes/phase3-test-infra.md](docs/notes/phase3-test-infra.md), [docs/experiments/phase1-tc02-03-04.md](docs/experiments/phase1-tc02-03-04.md),
-> [docs/experiments/phase4-emulator-live.md](docs/experiments/phase4-emulator-live.md) 에 있다. 처리량 주장이 아니다.
-
-| TC | 기준 | 실측 | 판정 |
-| --- | --- | --- | --- |
-| TC-01 정상 수집 | 센서 10 × 1,000건, 누락·중복 0 | 통합 테스트와 시나리오 실행기(`tc01.json`) 모두 10,000건 저장, 누락·중복·예상 외 0 | 통과 |
-| TC-02 DB 10초 중단 | panic 0, 누락·중복 0, 메모리 상한 | e2e(500 msg/s, DB 10초 차단): 누락·중복 0, `channel_depth` 최대 317, 힙 4→7MiB | 통과 |
-| TC-03 브로커 10초 중지 | 재연결·재구독, 누락 0, 중복 0 | e2e: 누락·중복 0. 발행기가 PUBACK 받은 것만 기록하므로 수집 측 유실 0을 입증(Phase 1의 1건 누락은 발행 측 유실이었음). 시나리오 실행기 6초 단절도 누락 0 | 통과 |
-| TC-04 SIGKILL | 재시작 후 누락 0 | e2e(500 msg/s, 바이너리 SIGKILL 후 3초 뒤 재시작): 누락·중복 0 | 통과 |
-| TC-05 같은 이벤트 3회 | DB 1건, 중복 제거 지표 증가 | 통합 테스트: DB 1건, `dedup_total` +2 | 통과 |
-| TC-06 1,000 msg/s 5분 + DB 지연 | 메모리 상한, 누락·중복 0 | e2e **5분**(DB 지연 100ms/방향, 970 msg/s, 291,076건): **누락·중복 0, 브로커 드롭 0**, `channel_depth` 최대 439, 힙 4→60MiB, 해소 42.6s. `max_queued_messages 60000`에서는 누락 45.5%였고(브로커 드롭 수 134,883과 일치) 큐를 200,000으로 올려 해결 — 원인은 큐 한도. 부족분이 큐보다 길면 다시 넘친다. [phase7-tc06-5min](docs/experiments/phase7-tc06-5min.md) | 통과 (큐 크기 의존) |
-| TC-07 형식 오류·FK 위반 | 격리, 정상 행 저장, 무한 재시도 없음 | 통합 테스트: 깨진 JSON, FK 위반 격리, 정상 행 저장, 재시도 루프 없음. **범위 밖 값은 제약이 없어 격리되지 않음** | 부분 통과 |
-| TC-08 경보 정확성·지연 | 임계치 경보 정확, 지연 p99 2초 | 통합 테스트: 위반 지속·재전달 3회에도 경보는 위반 진입 시점 2건뿐, `created_at − triggered_at` 최대 0.003초(경보 2건, 같은 호스트 시계). **p99를 낼 표본이 아니다. 부하 상태의 지연은 미측정** | 부분 통과 |
-| TC-12 통신 두절 | 조용한 센서만 offline, 복구 시 online | 통합 테스트: 센서 4개 중 1개 침묵 → 그 센서만 offline(timeout 이벤트 1건), 재수신 시 recovered. 4개 전부 조용하면 센서별 전이 없이 `stalled` 한 건 | 통과 |
-| TC-13 상태 전이 | flatline·범위 밖 → faulty, 해소 시 복구 | 통합 테스트: flatline 12회 → faulty → 값 변화 → online. 이력 connected→fault→fault_cleared. 범위 밖 반복·경보 상태 전이 동시성(20 경쟁에서 1건 성공)은 단위·통합 테스트 | 통과 |
-| TC-09 테넌트 격리 (DB 계층) | 모든 경로에서 타 테넌트 데이터 0건 | 통합 테스트(`scripts/provision_tenant.sh`로 만든 role): 뷰·기본 테이블·경보 테이블·쓰기·chunk 직접 조회·`SET`/`set_config`/`SET ROLE` 우회 모두 0건. **시험 중 세션 설정 우회 구멍을 발견해 수정(ADR-0009).** 경보 뷰와 대시보드 쿼리 13개도 tenant role로 검증. API 경로는 통합 테스트(타 조직 규칙·경보 404, 타 조직 센서 규칙 422). Grafana 로그인 경로는 Logto 로그인 후 사용자 2명이 각자 org에만 속함을 `scripts/grafana_audit.sh`로 확인(수동 1회, 매핑 변경 전에 로그인한 사용자는 이전 org에 남아 있었고 수정함). 실제 Logto 토큰으로 API 인증은 미시험 | 부분 통과 |
-| TC-17 테넌트 폭주 | 다른 테넌트에 영향 없음 | 폭주 150,000건(한 테넌트): **평온한 테넌트 유실 0건, 저장 지연 p95 148 ms**. 큐 60,000에서는 폭주 테넌트 자신이 32.8% 유실, 200,000으로 올리면 폭주 테넌트도 0% 유실. 조건·A/B 대조는 [phase7-tc17-tenant-sessions](docs/experiments/phase7-tc17-tenant-sessions.md), 결정은 [ADR-0011](docs/adr/0011-tenant-surge-isolation.md). | 통과 |
-| TC-16 정상 종료(SIGTERM) | 종료 후 재시작해도 누락·중복 0 | 통합 테스트: 센서당 700건 모두 저장. 이 테스트가 종료 시 Unsubscribe 유실과 paho 라우트 미등록 유실을 발견해 수정 | 통과 |
-
-수집 지연: Phase 2 환경에서 `ingest_lag_seconds` p99가 약 2.9초였다(약 3 msg/s, flush 주기 2초 영향).
-
-## 알려진 한계
-
-- 발행 측 버퍼링과 발행 로그는 시나리오 실행기에만 있다. FastAPI 데모 서버는 브로커 단절 중 생성분을 버퍼링하지 않는다.
-- TC-06 5분 조건은 `max_queued_messages 200000`에서만 통과한다. 부족분이 큐보다 길면 다시 유실된다(큐 상향은 유실 시점을 늦출 뿐, 쓰기 경로 개선은 [phase7-insert-strategies](docs/experiments/phase7-insert-strategies.md)에 후보만 있고 미적용). 큐가 찬 세션 하나의 브로커 메모리는 약 130 MiB.
-- 범위 밖 값·비정상 시각 검증은 ADR-0013으로 해결했다(격리 테이블로 보내고 ack).
-- TC-19(집계·압축, [phase7-aggregates-compression](docs/experiments/phase7-aggregates-compression.md)): 1,450만 행에서 압축으로 저장 용량 3.9배 감소, 전 센서 통계는 1분 집계가 원본보다 약 6배 빠르다(압축 후 1.8~2.9배). 보존 정책·집계 압축은 미측정이고 조회 시간 이상값 2건은 원인을 확인하지 못했다.
-- MCP 리포트 서버(ADR-0014): 격리·인증 거부·읽기 전용은 자체 서명 토큰으로 통합 테스트했다. 실제 Logto 로그인(M2M 조직 토큰, Claude Code PKCE, 두 테넌트 사용자)은 Claude Code 에서 확인했다. **Claude Desktop/claude.ai 커넥터는 공개 HTTPS가 필요한데 스택은 평문 HTTP라 시험하지 못했다.** 리포트 품질은 평가하지 않았다. 스킬은 `skills/daily-report/SKILL.md`, 설치 방법은 [docs/claude-desktop-install.md](docs/claude-desktop-install.md).
-- 센서 상태/경보(ADR-0008): 정상 범위·flatline 횟수는 센서 종류와 무관한 전역 기본값이다. 경보 큐가 차면 경보를 버린다(`alerts_dropped_total`).
-  DB 중단 중 센서 상태가 바뀌지 않는지는 단위 테스트(Requeue)로만 확인했고 e2e로는 확인하지 않았다. 경보 규칙을 등록하는 API는 Phase 6이며 지금은 SQL로 넣는다.
-- Grafana의 Prometheus 데이터소스는 기본 org(1)에 등록된다. 지표에는 sensor_id가 없지만 전 테넌트 합산이므로,
-  Phase 6에서 테넌트 org에 노출되지 않도록 폴더·데이터소스 권한을 정리해야 한다.
-
-## 디렉터리
-
-| 경로 | 내용 |
+| 지표 | 값 |
 | --- | --- |
-| `main.go`, `workers/` | 수집 워커 (수신, 배치 저장, 센서 상태) |
-| `cmd/api/`, `internal/api/` | 경보 규칙·상태 변경 API (Swagger UI `:8080/docs`, ADR-0010) |
-| `migrations/`, `seeds/` | 스키마(up/down 쌍)와 개발 시드 |
-| `tools/reconcile/` | 발행 로그 ↔ DB 대조 도구 |
-| `mqtt_emulator/` | Python 센서 에뮬레이터 ([README](mqtt_emulator/README.md)) |
-| `prometheus/`, `grafana/` | 지표 수집 설정과 대시보드 |
-| `docker-compose.demo.yml`, `demo/`, `scripts/demo_setup.sh` | 시연(EC2) 오버레이: 센서 9개·멀티 테넌트·오류 주입 ([런북](docs/demo-runbook.md), [OCI 판](docs/demo-runbook-oci.md)) |
-| `docs/` | ADR(`adr/`), 실험 기록(`experiments/`), 확인 노트(`notes/`) |
+| 압축 | 2,803 → 725 MiB (**3.9배**) |
+| 전 센서 통계 조회(14일) | 원본 1.10 s → 1분 연속 집계 0.19 s (**약 6배**) |
+
+### 알려진 한계
+
+- **백프레셔가 발행 측까지 전달되지 않는다.** 수집 용량을 넘는 입력은 브로커 큐에 쌓이고, 큐 크기를 넘으면 유실된다. 큐 상향은 시점을 늦출 뿐이다. 큐를 60,000으로 두었을 때 같은 부하(970 msg/s 5분, DB 지연)에서 45.5%가 유실됐고, 200,000으로 올려 통과했다.
+- 한 테넌트가 큐 한도를 넘게 폭주하면 그 테넌트의 메시지는 유실된다(32.8%). 다른 테넌트는 영향이 없다.
+- 수평 확장(공유 구독), 30분 이상 장시간 실행, 부하 상태의 경보 지연 p99는 아직 측정하지 않았다.
+
+모든 수치의 조건과 원문은 `docs/performance-summary.md`와 `docs/experiments/`에 있다.
